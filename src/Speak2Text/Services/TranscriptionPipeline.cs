@@ -31,6 +31,7 @@ public sealed class TranscriptionPipeline
             var wavPath = await _ffmpeg.ConvertToMono16KhzWavAsync(
                 options.AudioPath,
                 workDirectory,
+                options,
                 line => progress?.Report(new PipelineMessage(PipelineStage.Converting, line)),
                 cancellationToken);
 
