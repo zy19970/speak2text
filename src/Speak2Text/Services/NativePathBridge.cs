@@ -38,6 +38,7 @@ public sealed class NativePathBridge : IDisposable
 
             bridge.ModelPath = fullModelPath;
             bridge.WorkDirectory = fullWorkDirectory;
+            bridge.OriginalWorkDirectory = fullWorkDirectory;
 
             var modelDirectory = Path.GetDirectoryName(fullModelPath)
                 ?? throw new InvalidOperationException("无法确定模型所在目录。");
@@ -83,11 +84,6 @@ public sealed class NativePathBridge : IDisposable
 
     private DriveMapping CreateDriveMapping(string directory)
     {
-        if (string.IsNullOrEmpty(OriginalWorkDirectory) && Directory.Exists(directory))
-        {
-            // Filled below by Create() for the work-directory mapping path logic.
-        }
-
         var fullDirectory = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar);
         if (fullDirectory.StartsWith(@"\\", StringComparison.Ordinal))
         {
