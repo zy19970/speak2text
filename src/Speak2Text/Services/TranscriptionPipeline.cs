@@ -129,7 +129,8 @@ public sealed record PipelineMessage(
     double? Percent = null,
     long? PositionMilliseconds = null,
     long? DurationMilliseconds = null,
-    bool IsEstimate = false)
+    bool IsEstimate = false,
+    string? DiagnosticDetail = null)
 {
     public static PipelineMessage FromEngine(PipelineStage stage, EngineProgress engine)
         => new(
@@ -139,7 +140,8 @@ public sealed record PipelineMessage(
             engine.Percent,
             engine.PositionMilliseconds,
             engine.DurationMilliseconds,
-            engine.IsEstimate);
+            engine.IsEstimate,
+            engine.DiagnosticDetail);
 }
 
 public sealed record PipelineResult(TranscriptionResult Transcript, IReadOnlyList<string> ExportedFiles);
