@@ -59,7 +59,13 @@ jobs:
           git clone --depth 1 --branch $env:TRANSCRIBE_CPP_REF https://github.com/handy-computer/transcribe.cpp $src
           if ($LASTEXITCODE -ne 0) { throw "Failed to clone transcribe.cpp" }
 
-          cmake -S $src -B $build -G "Visual Studio 17 2022" -A x64 `
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install Ninja" }
+          }
+
+          cmake -S $src -B $build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
             -DTRANSCRIBE_VULKAN=ON `
             -DTRANSCRIBE_BUILD_TESTS=OFF `
             -DTRANSCRIBE_BUILD_EXAMPLES=ON `
@@ -68,16 +74,18 @@ jobs:
 
           if ($LASTEXITCODE -ne 0) { throw "transcribe.cpp configure failed" }
 
-          cmake --build $build --target transcribe-cli --config Release --parallel
+          cmake --build $build --target transcribe-cli --parallel
           if ($LASTEXITCODE -ne 0) { throw "transcribe-cli build failed" }
 
-          $cli = Join-Path $build "bin\Release\transcribe-cli.exe"
-          if (-not (Test-Path $cli)) {
-            throw "transcribe-cli.exe was not produced at $cli"
+          $cli = Get-ChildItem $build -Recurse -File -Filter "transcribe-cli.exe" |
+            Select-Object -First 1
+
+          if (-not $cli) {
+            throw "transcribe-cli.exe was not produced under $build"
           }
 
           New-Item -ItemType Directory -Force -Path "engine" | Out-Null
-          Copy-Item $cli "engine\transcribe-cli.exe" -Force
+          Copy-Item $cli.FullName "engine\transcribe-cli.exe" -Force
 
           & "engine\transcribe-cli.exe" --help | Select-Object -First 20
 
