@@ -25,16 +25,23 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         var batchFile = Path.Combine(workDirectory, "batch.txt");
         await File.WriteAllTextAsync(batchFile, wavPath + Environment.NewLine, new UTF8Encoding(false), cancellationToken);
 
+        var backend = NormalizeBackend(options.Backend);
         var args = new List<string>
         {
             "-q",
             "-m", options.ModelPath,
             "--diarize",
             "--timestamps", "segment",
-            "--backend", NormalizeBackend(options.Backend),
+            "--backend", backend,
             "--batch", batchFile,
             "--batch-jsonl"
         };
+
+        if (options.CpuThreadLimit > 0)
+        {
+            args.Add("--threads");
+            args.Add(options.CpuThreadLimit.ToString());
+        }
 
         if (!string.Equals(options.Language, "auto", StringComparison.OrdinalIgnoreCase))
         {
@@ -42,12 +49,19 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             args.Add(options.Language);
         }
 
+        int? dutyCycle = null;
+        if (options.LimitGpu && backend != "cpu" && options.MaxGpuPercent < 100)
+            dutyCycle = Math.Clamp(options.MaxGpuPercent, 10, 99);
+
         var result = await processRunner.RunAsync(
             AppPaths.TranscribeCliPath,
             args,
             AppPaths.EngineDirectory,
             onLog,
-            cancellationToken);
+            cancellationToken,
+            new ProcessRunOptions(
+                LowPriority: options.LimitCpu || options.LimitGpu,
+                DutyCyclePercent: dutyCycle));
 
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"transcribe-cli 执行失败，退出代码 {result.ExitCode}。\r\n{result.StandardError}".Trim());
