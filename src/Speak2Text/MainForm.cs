@@ -848,6 +848,8 @@ public sealed class MainForm : Form
             "MOSS_PREFILL" => "MOSS 解码预填充",
             "MOSS_DECODE" => "MOSS 转写生成",
             "MOSS_DONE" => "MOSS 识别完成",
+            "MOSS_GPU_FALLBACK" => "GPU失败，切换CPU",
+            "MOSS_CPU_FALLBACK" => "CPU回退处理中",
             "EXPORT" => "结果文件生成",
             "DONE" => "全部完成",
             _ => phase
