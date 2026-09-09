@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Speak2Text.Models;
@@ -11,12 +12,12 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         string wavPath,
         TranscriptionOptions options,
         string workDirectory,
-        Action<string>? onLog,
+        Action<EngineProgress>? onProgress,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(AppPaths.TranscribeCliPath))
             throw new FileNotFoundException(
-                "未找到 transcribe-cli.exe。请将 transcribe.cpp 的 Windows CLI 及其依赖文件放到程序目录的 engine 文件夹中。",
+                "未找到 transcribe-cli.exe。请将 Speak2Text Action 构建的 patched CLI 放到 engine 文件夹中。",
                 AppPaths.TranscribeCliPath);
 
         if (!File.Exists(options.ModelPath))
@@ -40,7 +41,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         if (options.CpuThreadLimit > 0)
         {
             args.Add("--threads");
-            args.Add(options.CpuThreadLimit.ToString());
+            args.Add(options.CpuThreadLimit.ToString(CultureInfo.InvariantCulture));
         }
 
         if (!string.Equals(options.Language, "auto", StringComparison.OrdinalIgnoreCase))
@@ -53,11 +54,18 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         if (options.LimitGpu && backend != "cpu" && options.MaxGpuPercent < 100)
             dutyCycle = Math.Clamp(options.MaxGpuPercent, 10, 99);
 
+        void HandleEngineLine(string line)
+        {
+            var parsed = ParseMossProgress(line);
+            if (parsed is not null)
+                onProgress?.Invoke(parsed);
+        }
+
         var result = await processRunner.RunAsync(
             AppPaths.TranscribeCliPath,
             args,
             AppPaths.EngineDirectory,
-            onLog,
+            HandleEngineLine,
             cancellationToken,
             new ProcessRunOptions(
                 LowPriority: options.LimitCpu || options.LimitGpu,
@@ -67,6 +75,98 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             throw new InvalidOperationException($"transcribe-cli 执行失败，退出代码 {result.ExitCode}。\r\n{result.StandardError}".Trim());
 
         return ParseJsonLines(result.StandardOutput, options);
+    }
+
+    private static EngineProgress? ParseMossProgress(string line)
+    {
+        if (!line.StartsWith("S2T_PROGRESS|MOSS|", StringComparison.Ordinal))
+            return null;
+
+        var parts = line.Split('|');
+        if (parts.Length != 7)
+            return null;
+
+        if (!int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out var done) ||
+            !int.TryParse(parts[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out var total) ||
+            !long.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out var coveredMs) ||
+            !long.TryParse(parts[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out var audioMs))
+        {
+            return null;
+        }
+
+        var phase = parts[2].Trim().ToUpperInvariant();
+        double? percent = null;
+        var isEstimate = false;
+        string message;
+
+        switch (phase)
+        {
+            case "START":
+                message = "MOSS 模型已加载，准备开始识别";
+                percent = 0;
+                break;
+
+            case "ENCODE":
+                message = $"MOSS 音频编码 {done}/{Math.Max(total, 1)}";
+                percent = Fraction(done, total);
+                break;
+
+            case "ADAPTOR":
+                message = "MOSS 音频特征适配";
+                percent = Fraction(done, total);
+                break;
+
+            case "PREFILL":
+                message = $"MOSS 解码预填充 {done}/{Math.Max(total, 1)}";
+                percent = Fraction(done, total);
+                break;
+
+            case "DECODE":
+                if (audioMs > 0 && coveredMs > 0)
+                {
+                    percent = Math.Clamp(coveredMs * 100d / audioMs, 0d, 100d);
+                    message = $"MOSS 正在生成转写，已覆盖 {FormatMediaTime(coveredMs)}";
+                }
+                else
+                {
+                    percent = Fraction(done, total);
+                    isEstimate = true;
+                    message = $"MOSS 正在生成转写，已生成 {done} token";
+                }
+                break;
+
+            case "DONE":
+                message = "MOSS 识别完成";
+                percent = 100;
+                coveredMs = audioMs;
+                break;
+
+            default:
+                return null;
+        }
+
+        return new EngineProgress(
+            $"MOSS_{phase}",
+            message,
+            percent,
+            coveredMs > 0 ? coveredMs : null,
+            audioMs > 0 ? audioMs : null,
+            isEstimate);
+    }
+
+    private static double? Fraction(int done, int total)
+    {
+        if (total <= 0)
+            return null;
+        return Math.Clamp(done * 100d / total, 0d, 100d);
+    }
+
+    private static string FormatMediaTime(long milliseconds)
+    {
+        var value = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return value.TotalHours >= 1
+            ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}"
+            : $"{value.Minutes:00}:{value.Seconds:00}";
     }
 
     private static TranscriptionResult ParseJsonLines(string jsonLines, TranscriptionOptions options)
@@ -106,7 +206,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             }
             catch (JsonException)
             {
-                // Quiet mode should keep stdout JSON-only. Ignore any incidental non-JSON lines defensively.
+                // Quiet mode keeps stdout JSON-only; ignore incidental non-JSON lines defensively.
             }
         }
 
