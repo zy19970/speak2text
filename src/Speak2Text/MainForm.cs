@@ -70,6 +70,7 @@ public sealed class MainForm : Form
     private readonly Button _startButton = new() { Text = "开始转写", AutoSize = true, Height = 36 };
     private readonly Button _cancelButton = new() { Text = "取消", AutoSize = true, Height = 36, Enabled = false };
     private readonly Button _openOutputButton = new() { Text = "打开输出目录", AutoSize = true, Height = 36, Enabled = false };
+    private readonly Button _openTempButton = new() { Text = "打开临时目录", AutoSize = true, Height = 36 };
     private readonly Label _status = new() { Text = "就绪", AutoSize = true };
 
     private readonly Panel _dropPanel = new()
@@ -345,6 +346,7 @@ public sealed class MainForm : Form
         panel.Controls.Add(_startButton);
         panel.Controls.Add(_cancelButton);
         panel.Controls.Add(_openOutputButton);
+        panel.Controls.Add(_openTempButton);
         _status.Margin = new Padding(16, 10, 0, 0);
         panel.Controls.Add(_status);
         return panel;
@@ -355,6 +357,7 @@ public sealed class MainForm : Form
         _startButton.Click += StartTranscriptionAsync;
         _cancelButton.Click += (_, _) => _cancellation?.Cancel();
         _openOutputButton.Click += (_, _) => OpenOutputDirectory();
+        _openTempButton.Click += (_, _) => OpenTemporaryDirectory();
 
         _usageTimer.Tick += (_, _) =>
         {
@@ -742,6 +745,17 @@ public sealed class MainForm : Form
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
             return;
 
+        OpenDirectory(directory);
+    }
+
+    private void OpenTemporaryDirectory()
+    {
+        Directory.CreateDirectory(AppPaths.TemporaryDirectory);
+        OpenDirectory(AppPaths.TemporaryDirectory);
+    }
+
+    private static void OpenDirectory(string directory)
+    {
         Process.Start(new ProcessStartInfo
         {
             FileName = "explorer.exe",
