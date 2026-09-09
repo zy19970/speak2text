@@ -108,7 +108,7 @@ public sealed class FfmpegService(ProcessRunner processRunner)
         return outputPath;
     }
 
-    private async Task<long> ProbeDurationMillisecondsAsync(
+    public async Task<long> ProbeDurationMillisecondsAsync(
         string inputPath,
         CancellationToken cancellationToken)
     {
@@ -139,5 +139,55 @@ public sealed class FfmpegService(ProcessRunner processRunner)
         }
 
         return Math.Max(1, (long)Math.Round(seconds * 1000d));
+    }
+
+    public async Task<string> ExtractWavSegmentAsync(
+        string sourceWavPath,
+        string workDirectory,
+        int segmentIndex,
+        long startMilliseconds,
+        long durationMilliseconds,
+        TranscriptionOptions options,
+        CancellationToken cancellationToken)
+    {
+        var outputPath = Path.Combine(workDirectory, $"chunk-{segmentIndex:000}.wav");
+        var startSeconds = (startMilliseconds / 1000d).ToString("0.###", CultureInfo.InvariantCulture);
+        var durationSeconds = (durationMilliseconds / 1000d).ToString("0.###", CultureInfo.InvariantCulture);
+
+        var args = new List<string>
+        {
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-ss", startSeconds,
+            "-i", sourceWavPath,
+            "-t", durationSeconds,
+            "-vn",
+            "-ac", "1",
+            "-ar", "16000"
+        };
+
+        if (options.CpuThreadLimit > 0)
+        {
+            args.Add("-threads");
+            args.Add(options.CpuThreadLimit.ToString(CultureInfo.InvariantCulture));
+        }
+
+        args.Add("-c:a");
+        args.Add("pcm_s16le");
+        args.Add(outputPath);
+
+        var result = await processRunner.RunAsync(
+            AppPaths.FfmpegPath,
+            args,
+            AppPaths.EngineDirectory,
+            null,
+            cancellationToken,
+            new ProcessRunOptions(LowPriority: options.LimitCpu));
+
+        if (result.ExitCode != 0 || !File.Exists(outputPath))
+            throw new InvalidOperationException($"FFmpeg 长录音分段失败。\r\n{result.StandardError}".Trim());
+
+        return outputPath;
     }
 }
