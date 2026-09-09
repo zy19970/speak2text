@@ -68,7 +68,7 @@ public sealed class TranscriptionPipeline
         }
         finally
         {
-            TryDeleteDirectory(workDirectory);
+            await CleanupWorkDirectoryAsync(workDirectory);
         }
     }
 
@@ -82,16 +82,32 @@ public sealed class TranscriptionPipeline
             throw new ArgumentException("请选择输出目录。", nameof(options.OutputDirectory));
     }
 
-    private static void TryDeleteDirectory(string directory)
+    private static async Task CleanupWorkDirectoryAsync(string directory)
     {
-        try
+        const int attempts = 5;
+
+        for (var attempt = 1; attempt <= attempts; attempt++)
         {
-            if (Directory.Exists(directory))
+            try
+            {
+                if (!Directory.Exists(directory))
+                    return;
+
                 Directory.Delete(directory, recursive: true);
-        }
-        catch
-        {
-            // Temporary files can be cleaned by the OS later.
+                return;
+            }
+            catch when (attempt < attempts)
+            {
+                // Windows can keep a just-terminated ffmpeg/transcribe handle
+                // alive briefly. Retry instead of immediately leaving a WAV.
+                await Task.Delay(250);
+            }
+            catch
+            {
+                // Leave the directory visible in temp. Startup cleanup will
+                // remove it after 24 hours if it remains abandoned.
+                return;
+            }
         }
     }
 }
