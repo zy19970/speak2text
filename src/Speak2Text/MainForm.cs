@@ -838,7 +838,7 @@ public sealed class MainForm : Form
         if (message.Phase is "MOSS_GPU_FALLBACK" or "MOSS_CPU_FALLBACK")
         {
             item.Note = message.Message;
-            item.ErrorMessage = message.Message;
+            item.ErrorMessage = message.DiagnosticDetail ?? message.Message;
             if (message.Phase == "MOSS_CPU_FALLBACK")
                 item.EffectiveBackend = "cpu";
         }
