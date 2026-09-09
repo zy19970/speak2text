@@ -54,7 +54,7 @@ public sealed class NativePathBridge : IDisposable
             if (NeedsBridge(fullWorkDirectory))
             {
                 var workMap = bridge.CreateDriveMapping(fullWorkDirectory);
-                bridge.WorkDirectory = workMap.DriveRoot.TrimEnd(Path.DirectorySeparatorChar);
+                bridge.WorkDirectory = workMap.DriveRoot;
             }
 
             return bridge;
