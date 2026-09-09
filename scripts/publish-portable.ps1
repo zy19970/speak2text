@@ -25,6 +25,7 @@ dotnet publish $project `
 
 New-Item (Join-Path $outDir "engine") -ItemType Directory -Force | Out-Null
 New-Item (Join-Path $outDir "models") -ItemType Directory -Force | Out-Null
+New-Item (Join-Path $outDir "temp") -ItemType Directory -Force | Out-Null
 
 if ($IncludeRuntimeFiles) {
     $engineSource = Join-Path $repoRoot "engine"
