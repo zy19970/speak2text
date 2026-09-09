@@ -7,6 +7,7 @@ namespace Speak2Text;
 
 public sealed class MainForm : Form
 {
+    private const long LongAudioWarningMilliseconds = 45L * 60 * 1000;
     private readonly List<TranscriptionQueueItem> _queue = [];
 
     private readonly DataGridView _queueGrid = new()
@@ -118,8 +119,8 @@ public sealed class MainForm : Form
     {
         Text = "Speak2Text - 离线录音批量转写";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(980, 820);
-        Size = new Size(1120, 900);
+        MinimumSize = new Size(1080, 820);
+        Size = new Size(1320, 900);
         Font = new Font("Microsoft YaHei UI", 9F);
         AutoScaleMode = AutoScaleMode.Dpi;
         AllowDrop = true;
@@ -155,14 +156,28 @@ public sealed class MainForm : Form
             Name = "FileName",
             HeaderText = "文件",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 45,
+            FillWeight = 34,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Duration",
+            HeaderText = "时长",
+            Width = 82,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
         _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             Name = "Status",
             HeaderText = "状态",
-            Width = 86,
+            Width = 78,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Backend",
+            HeaderText = "后端",
+            Width = 82,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
         _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
@@ -170,21 +185,29 @@ public sealed class MainForm : Form
             Name = "Phase",
             HeaderText = "当前阶段",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-            FillWeight = 27,
+            FillWeight = 20,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
         _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             Name = "Progress",
             HeaderText = "进度",
-            Width = 82,
+            Width = 76,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
         _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             Name = "Elapsed",
             HeaderText = "耗时",
-            Width = 84,
+            Width = 82,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Note",
+            HeaderText = "说明 / 错误原因",
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+            FillWeight = 28,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });
 
@@ -687,13 +710,19 @@ public sealed class MainForm : Form
                     break;
                 }
 
+                if (!await PrepareQueueItemBeforeRunAsync(item, _queueCancellation.Token))
+                {
+                    cancelled = true;
+                    break;
+                }
+
                 _currentQueueItem = item;
                 PrepareQueueItemForRun(item);
                 ResetProgressUi();
                 _currentFileLabel.Text = $"当前文件：{item.FileName}";
                 _taskStopwatch.Restart();
 
-                var options = BuildOptions(item.FilePath);
+                var options = BuildOptions(item.FilePath, item.BackendOverride);
                 var progress = new Progress<PipelineMessage>(message => HandlePipelineProgress(item, message));
 
                 try
@@ -706,7 +735,10 @@ public sealed class MainForm : Form
                     item.Phase = "已完成";
                     item.Percent = 100;
                     item.IsEstimate = false;
+                    item.EffectiveBackend = result.Transcript.Backend;
                     item.ExportedFiles = result.ExportedFiles;
+                    if (string.IsNullOrWhiteSpace(item.Note))
+                        item.Note = $"完成，实际后端：{GetBackendDisplayName(result.Transcript.Backend)}";
                     _lastExportedFiles = result.ExportedFiles;
                     UpdateQueueRow(item);
                 }
@@ -730,6 +762,7 @@ public sealed class MainForm : Form
                     item.Phase = "失败";
                     item.Percent = null;
                     item.ErrorMessage = ex.Message;
+                    item.Note = SummarizeError(ex.Message);
                     UpdateQueueRow(item);
                 }
 
@@ -777,6 +810,7 @@ public sealed class MainForm : Form
         item.IsEstimate = false;
         item.Elapsed = TimeSpan.Zero;
         item.ErrorMessage = null;
+        item.EffectiveBackend = null;
         item.ExportedFiles = [];
         UpdateQueueRow(item);
         UpdateQueueSummary();
@@ -800,6 +834,15 @@ public sealed class MainForm : Form
         item.Percent = message.Percent;
         item.IsEstimate = message.IsEstimate;
         item.Elapsed = _taskStopwatch.Elapsed;
+
+        if (message.Phase is "MOSS_GPU_FALLBACK" or "MOSS_CPU_FALLBACK")
+        {
+            item.Note = message.Message;
+            item.ErrorMessage = message.Message;
+            if (message.Phase == "MOSS_CPU_FALLBACK")
+                item.EffectiveBackend = "cpu";
+        }
+
         UpdateQueueRow(item);
 
         if (message.Percent is double percent)
@@ -866,17 +909,20 @@ public sealed class MainForm : Form
             var rowIndex = _queueGrid.Rows.Add(
                 i + 1,
                 item.FileName,
+                GetDurationText(item),
                 GetStatusText(item.Status),
+                GetQueueBackendText(item),
                 item.Phase,
                 GetProgressText(item),
-                FormatDuration(item.Elapsed));
+                FormatDuration(item.Elapsed),
+                item.Note ?? string.Empty);
 
             var row = _queueGrid.Rows[rowIndex];
             row.Tag = item.Id;
             row.Cells["FileName"].ToolTipText = item.FilePath;
 
             if (!string.IsNullOrWhiteSpace(item.ErrorMessage))
-                row.Cells["Phase"].ToolTipText = item.ErrorMessage;
+                row.Cells["Note"].ToolTipText = item.ErrorMessage;
         }
     }
 
@@ -887,11 +933,14 @@ public sealed class MainForm : Form
             if (row.Tag is not Guid id || id != item.Id)
                 continue;
 
+            row.Cells["Duration"].Value = GetDurationText(item);
             row.Cells["Status"].Value = GetStatusText(item.Status);
+            row.Cells["Backend"].Value = GetQueueBackendText(item);
             row.Cells["Phase"].Value = item.Phase;
             row.Cells["Progress"].Value = GetProgressText(item);
             row.Cells["Elapsed"].Value = FormatDuration(item.Elapsed);
-            row.Cells["Phase"].ToolTipText = item.ErrorMessage ?? string.Empty;
+            row.Cells["Note"].Value = item.Note ?? string.Empty;
+            row.Cells["Note"].ToolTipText = item.ErrorMessage ?? item.Note ?? string.Empty;
             return;
         }
     }
@@ -1056,14 +1105,9 @@ public sealed class MainForm : Form
             _outputPath.Text = dialog.SelectedPath;
     }
 
-    private TranscriptionOptions BuildOptions(string audioPath)
+    private TranscriptionOptions BuildOptions(string audioPath, string? backendOverride = null)
     {
-        var backend = _backend.SelectedIndex switch
-        {
-            1 => "cpu",
-            2 => "vulkan",
-            _ => "auto"
-        };
+        var backend = backendOverride ?? GetSelectedBackend();
 
         var language = _language.SelectedIndex switch
         {
@@ -1088,6 +1132,141 @@ public sealed class MainForm : Form
             LimitGpu = _limitGpu.Checked,
             MaxGpuPercent = (int)_gpuLimit.Value
         };
+    }
+
+    private async Task<bool> PrepareQueueItemBeforeRunAsync(
+        TranscriptionQueueItem item,
+        CancellationToken cancellationToken)
+    {
+        if (item.DurationMilliseconds is null)
+        {
+            item.Phase = "检测时长";
+            item.Note = "正在读取录音时长…";
+            UpdateQueueRow(item);
+
+            try
+            {
+                item.DurationMilliseconds = await _pipeline.ProbeDurationMillisecondsAsync(
+                    item.FilePath,
+                    cancellationToken);
+                item.Note = null;
+                UpdateQueueRow(item);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                item.Note = "无法预读时长：" + SummarizeError(ex.Message);
+                item.ErrorMessage = ex.Message;
+                UpdateQueueRow(item);
+                return true;
+            }
+        }
+
+        var selectedBackend = item.BackendOverride ?? GetSelectedBackend();
+        if (selectedBackend == "cpu" ||
+            item.DurationMilliseconds < LongAudioWarningMilliseconds ||
+            item.LongAudioWarningAcknowledged)
+        {
+            return true;
+        }
+
+        var durationText = FormatDuration(TimeSpan.FromMilliseconds(item.DurationMilliseconds.Value));
+        var backendText = GetBackendDisplayName(selectedBackend);
+
+        var choice = MessageBox.Show(
+            this,
+            $"检测到长录音：{item.FileName}\r\n" +
+            $"时长：{durationText}\r\n" +
+            $"当前后端：{backendText}\r\n\r\n" +
+            "长录音在 Intel Iris Xe / Vulkan 上可能因 KV cache 或大缓冲区分配导致显存/设备内存不足。\r\n" +
+            "当前版本会对 GPU 长录音自动分段；若分段内仍出现 Vulkan 显存错误，还会自动回退 CPU。\r\n\r\n" +
+            "选择“是”：本文件直接改用 CPU\r\n" +
+            "选择“否”：继续当前 GPU/Auto 设置\r\n" +
+            "选择“取消”：停止整个队列",
+            "长录音预警",
+            MessageBoxButtons.YesNoCancel,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button1);
+
+        if (choice == DialogResult.Cancel)
+        {
+            item.Phase = "等待中";
+            item.Note = $"长录音 {durationText}：用户在预警处停止队列";
+            UpdateQueueRow(item);
+            return false;
+        }
+
+        item.LongAudioWarningAcknowledged = true;
+
+        if (choice == DialogResult.Yes)
+        {
+            item.BackendOverride = "cpu";
+            item.Note = $"长录音 {durationText}：本文件已按预警改用 CPU";
+        }
+        else
+        {
+            item.Note =
+                $"长录音 {durationText}：继续 {backendText}；GPU 分段保护，Vulkan 失败时自动回退 CPU";
+        }
+
+        UpdateQueueRow(item);
+        return true;
+    }
+
+    private string GetSelectedBackend()
+        => _backend.SelectedIndex switch
+        {
+            1 => "cpu",
+            2 => "vulkan",
+            _ => "auto"
+        };
+
+    private static string GetQueueBackendText(TranscriptionQueueItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.EffectiveBackend))
+            return GetBackendDisplayName(item.EffectiveBackend);
+
+        if (!string.IsNullOrWhiteSpace(item.BackendOverride))
+            return GetBackendDisplayName(item.BackendOverride) + "*";
+
+        return "全局";
+    }
+
+    private static string GetBackendDisplayName(string backend)
+        => backend.Trim().ToLowerInvariant() switch
+        {
+            "cpu" => "CPU",
+            "vulkan" => "Vulkan",
+            "auto" => "Auto",
+            "mixed" => "混合",
+            _ => backend
+        };
+
+    private static string GetDurationText(TranscriptionQueueItem item)
+        => item.DurationMilliseconds is long duration
+            ? FormatDuration(TimeSpan.FromMilliseconds(duration))
+            : "--";
+
+    private static string SummarizeError(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return "未知错误";
+
+        var lines = message
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var preferred = lines.FirstOrDefault(line =>
+            line.Contains("Vulkan", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("显存", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("内存", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("失败", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("error", StringComparison.OrdinalIgnoreCase));
+
+        var summary = preferred ?? lines.FirstOrDefault() ?? message.Trim();
+        return summary.Length <= 160 ? summary : summary[..157] + "…";
     }
 
     private void ValidateRuntimeFiles()
