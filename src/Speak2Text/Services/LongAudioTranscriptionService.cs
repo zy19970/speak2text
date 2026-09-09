@@ -80,6 +80,20 @@ public sealed class LongAudioTranscriptionService
                             chunk.StartMilliseconds + localPosition);
                     }
 
+                    // Preserve fallback phases so the WinForms queue can record
+                    // the actual Vulkan failure reason in its visible Note column.
+                    if (progress.Phase is "MOSS_GPU_FALLBACK" or "MOSS_CPU_FALLBACK")
+                    {
+                        onProgress?.Invoke(new EngineProgress(
+                            progress.Phase,
+                            $"分段 {i + 1}/{chunks.Count} · {progress.Message}",
+                            overall,
+                            absolutePosition,
+                            durationMs,
+                            progress.IsEstimate));
+                        return;
+                    }
+
                     onProgress?.Invoke(new EngineProgress(
                         "MOSS_LONG",
                         $"分段 {i + 1}/{chunks.Count} · {progress.Message}",
