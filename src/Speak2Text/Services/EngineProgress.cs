@@ -6,4 +6,5 @@ public sealed record EngineProgress(
     double? Percent = null,
     long? PositionMilliseconds = null,
     long? DurationMilliseconds = null,
-    bool IsEstimate = false);
+    bool IsEstimate = false,
+    string? DiagnosticDetail = null);
