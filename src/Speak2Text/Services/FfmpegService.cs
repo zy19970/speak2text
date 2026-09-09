@@ -35,8 +35,7 @@ public sealed class FfmpegService(ProcessRunner processRunner)
             cancellationToken);
 
         if (result.ExitCode != 0 || !File.Exists(outputPath))
-            throw new InvalidOperationException($"FFmpeg 音频转换失败。
-{result.StandardError}".Trim());
+            throw new InvalidOperationException($"FFmpeg 音频转换失败。\r\n{result.StandardError}".Trim());
 
         return outputPath;
     }
