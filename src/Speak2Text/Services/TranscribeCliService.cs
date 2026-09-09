@@ -50,8 +50,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             cancellationToken);
 
         if (result.ExitCode != 0)
-            throw new InvalidOperationException($"transcribe-cli 执行失败，退出代码 {result.ExitCode}。
-{result.StandardError}".Trim());
+            throw new InvalidOperationException($"transcribe-cli 执行失败，退出代码 {result.ExitCode}。\r\n{result.StandardError}".Trim());
 
         return ParseJsonLines(result.StandardOutput, options);
     }
@@ -62,8 +61,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         var segments = new List<TranscriptSegment>();
         string? reportedError = null;
 
-        foreach (var rawLine in jsonLines.Split(new[] { '', '
-' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var rawLine in jsonLines.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             try
             {
@@ -107,14 +105,11 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         if (segments.Count == 0)
         {
             var preview = jsonLines.Length > 1200 ? jsonLines[..1200] + "…" : jsonLines;
-            throw new InvalidOperationException($"未能从 transcribe-cli 输出中解析到转写结果。
-
-CLI 输出：
-{preview}");
+            throw new InvalidOperationException($"未能从 transcribe-cli 输出中解析到转写结果。\r\n\r\nCLI 输出：\r\n{preview}");
         }
 
         if (string.IsNullOrWhiteSpace(fullText))
-            fullText = string.Join(' ', segments.Select(x => x.Text));
+            fullText = string.Join(" ", segments.Select(x => x.Text));
 
         return new TranscriptionResult
         {
