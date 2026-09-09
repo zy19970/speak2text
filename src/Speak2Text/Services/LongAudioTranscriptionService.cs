@@ -90,7 +90,8 @@ public sealed class LongAudioTranscriptionService
                             overall,
                             absolutePosition,
                             durationMs,
-                            progress.IsEstimate));
+                            progress.IsEstimate,
+                            progress.DiagnosticDetail));
                         return;
                     }
 
