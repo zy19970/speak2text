@@ -73,6 +73,9 @@ jobs:
           git clone --depth 1 --branch $env:TRANSCRIBE_CPP_REF https://github.com/handy-computer/transcribe.cpp $src
           if ($LASTEXITCODE -ne 0) { throw "Failed to clone transcribe.cpp" }
 
+          python scripts/patch-transcribe-progress.py $src
+          if ($LASTEXITCODE -ne 0) { throw "Failed to patch MOSS realtime progress support" }
+
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
             choco install ninja --no-progress -y
             if ($LASTEXITCODE -ne 0) { throw "Failed to install Ninja" }
@@ -118,15 +121,19 @@ jobs:
 
           $ffmpeg = Get-ChildItem $extract -Recurse -File -Filter "ffmpeg.exe" |
             Select-Object -First 1
+          $ffprobe = Get-ChildItem $extract -Recurse -File -Filter "ffprobe.exe" |
+            Select-Object -First 1
 
-          if (-not $ffmpeg) {
-            throw "ffmpeg.exe was not found in downloaded archive"
+          if (-not $ffmpeg -or -not $ffprobe) {
+            throw "ffmpeg.exe or ffprobe.exe was not found in downloaded archive"
           }
 
           New-Item -ItemType Directory -Force -Path "engine" | Out-Null
           Copy-Item $ffmpeg.FullName "engine\ffmpeg.exe" -Force
+          Copy-Item $ffprobe.FullName "engine\ffprobe.exe" -Force
 
           & "engine\ffmpeg.exe" -version | Select-Object -First 3
+          & "engine\ffprobe.exe" -version | Select-Object -First 1
 
       - name: Publish complete portable package
         shell: pwsh
@@ -139,6 +146,7 @@ jobs:
           $required = @(
             "$root\Speak2Text.exe",
             "$root\engine\ffmpeg.exe",
+            "$root\engine\ffprobe.exe",
             "$root\engine\transcribe-cli.exe"
           )
 
