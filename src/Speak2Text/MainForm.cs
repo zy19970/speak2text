@@ -7,7 +7,32 @@ namespace Speak2Text;
 
 public sealed class MainForm : Form
 {
-    private readonly TextBox _audioPath = new() { Dock = DockStyle.Fill, ReadOnly = true };
+    private readonly List<TranscriptionQueueItem> _queue = [];
+
+    private readonly DataGridView _queueGrid = new()
+    {
+        Dock = DockStyle.Fill,
+        AllowUserToAddRows = false,
+        AllowUserToDeleteRows = false,
+        AllowUserToResizeRows = false,
+        RowHeadersVisible = false,
+        ReadOnly = true,
+        MultiSelect = true,
+        SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+        AutoGenerateColumns = false,
+        BackgroundColor = SystemColors.Window,
+        BorderStyle = BorderStyle.FixedSingle,
+        AllowDrop = true,
+        MinimumSize = new Size(0, 190)
+    };
+
+    private readonly Button _addFilesButton = new() { Text = "添加文件…", AutoSize = true };
+    private readonly Button _removeFilesButton = new() { Text = "删除选中", AutoSize = true };
+    private readonly Button _clearQueueButton = new() { Text = "清空队列", AutoSize = true };
+    private readonly Button _moveUpButton = new() { Text = "上移", AutoSize = true };
+    private readonly Button _moveDownButton = new() { Text = "下移", AutoSize = true };
+    private readonly Label _queueSummaryLabel = new() { Text = "队列为空，可一次选择或拖入多个录音文件。", AutoSize = true, ForeColor = SystemColors.GrayText };
+
     private readonly TextBox _modelPath = new() { Dock = DockStyle.Fill };
     private readonly TextBox _outputPath = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _backend = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
@@ -18,10 +43,11 @@ public sealed class MainForm : Form
     private readonly CheckBox _srt = new() { Text = "SRT", Checked = true, AutoSize = true };
     private readonly CheckBox _json = new() { Text = "JSON", Checked = true, AutoSize = true };
 
+    private readonly Label _currentFileLabel = new() { Text = "当前文件：--", AutoSize = true };
     private readonly Label _phaseLabel = new() { Text = "阶段：等待开始", AutoSize = true };
     private readonly Label _progressPercentLabel = new() { Text = "--", AutoSize = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly Label _mediaPositionLabel = new() { Text = "处理位置：--", AutoSize = true, ForeColor = SystemColors.GrayText };
-    private readonly Label _elapsedLabel = new() { Text = "已耗时：00:00", AutoSize = true };
+    private readonly Label _elapsedLabel = new() { Text = "当前文件已耗时：00:00", AutoSize = true };
     private readonly Label _remainingLabel = new() { Text = "预计剩余：--", AutoSize = true };
     private readonly ProgressBar _progress = new()
     {
@@ -35,8 +61,8 @@ public sealed class MainForm : Form
 
     private readonly Label _cpuUsageLabel = new() { Text = "CPU 0%", AutoSize = true };
     private readonly Label _gpuUsageLabel = new() { Text = "GPU --", AutoSize = true };
-    private readonly ProgressBar _cpuUsageBar = new() { Minimum = 0, Maximum = 100, Value = 0, Width = 240, Height = 18 };
-    private readonly ProgressBar _gpuUsageBar = new() { Minimum = 0, Maximum = 100, Value = 0, Width = 240, Height = 18 };
+    private readonly ProgressBar _cpuUsageBar = new() { Minimum = 0, Maximum = 100, Value = 0, Width = 220, Height = 18 };
+    private readonly ProgressBar _gpuUsageBar = new() { Minimum = 0, Maximum = 100, Value = 0, Width = 220, Height = 18 };
 
     private readonly CheckBox _limitCpu = new() { Text = "限制 CPU", Checked = true, AutoSize = true };
     private readonly NumericUpDown _cpuLimit = new()
@@ -67,28 +93,11 @@ public sealed class MainForm : Form
         ForeColor = SystemColors.GrayText
     };
 
-    private readonly Button _startButton = new() { Text = "开始转写", AutoSize = true, Height = 36 };
-    private readonly Button _cancelButton = new() { Text = "取消", AutoSize = true, Height = 36, Enabled = false };
-    private readonly Button _openOutputButton = new() { Text = "打开输出目录", AutoSize = true, Height = 36, Enabled = false };
+    private readonly Button _startButton = new() { Text = "开始队列", AutoSize = true, Height = 36 };
+    private readonly Button _cancelButton = new() { Text = "停止队列", AutoSize = true, Height = 36, Enabled = false };
+    private readonly Button _openOutputButton = new() { Text = "打开输出目录", AutoSize = true, Height = 36 };
     private readonly Button _openTempButton = new() { Text = "打开临时目录", AutoSize = true, Height = 36 };
     private readonly Label _status = new() { Text = "就绪", AutoSize = true };
-
-    private readonly Panel _dropPanel = new()
-    {
-        Dock = DockStyle.Fill,
-        BorderStyle = BorderStyle.FixedSingle,
-        AllowDrop = true,
-        MinimumSize = new Size(0, 88)
-    };
-    private readonly Label _dropLabel = new()
-    {
-        Text = "将录音拖到这里\r\n支持 m4a / mp3 / wav / aac / flac 等 FFmpeg 可读取格式",
-        Dock = DockStyle.Fill,
-        TextAlign = ContentAlignment.MiddleCenter,
-        ForeColor = SystemColors.GrayText,
-        Font = new Font("Microsoft YaHei UI", 10F),
-        AllowDrop = true
-    };
 
     private readonly TranscriptionPipeline _pipeline = new();
     private readonly SystemResourceMonitor _resourceMonitor = new();
@@ -97,18 +106,20 @@ public sealed class MainForm : Form
     private readonly Stopwatch _taskStopwatch = new();
     private readonly Stopwatch _phaseStopwatch = new();
 
-    private CancellationTokenSource? _cancellation;
+    private CancellationTokenSource? _queueCancellation;
+    private TranscriptionQueueItem? _currentQueueItem;
     private IReadOnlyList<string> _lastExportedFiles = [];
     private string _currentPhaseKey = string.Empty;
     private double? _currentPhasePercent;
     private bool _currentPhaseEstimate;
+    private bool _queueRunning;
 
     public MainForm()
     {
-        Text = "Speak2Text - 离线录音转文字";
+        Text = "Speak2Text - 离线录音批量转写";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(900, 700);
-        Size = new Size(1020, 780);
+        MinimumSize = new Size(980, 820);
+        Size = new Size(1120, 900);
         Font = new Font("Microsoft YaHei UI", 9F);
         AutoScaleMode = AutoScaleMode.Dpi;
         AllowDrop = true;
@@ -121,11 +132,65 @@ public sealed class MainForm : Form
         _modelPath.Text = AppPaths.DefaultModelPath;
         _outputPath.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Speak2Text");
 
+        ConfigureQueueGrid();
         BuildLayout();
         WireEvents();
         UpdateCpuLimitHint();
+        UpdateQueueSummary();
         UpdateRuntimeStatus();
         _usageTimer.Start();
+    }
+
+    private void ConfigureQueueGrid()
+    {
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Index",
+            HeaderText = "#",
+            Width = 42,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "FileName",
+            HeaderText = "文件",
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+            FillWeight = 45,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Status",
+            HeaderText = "状态",
+            Width = 86,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Phase",
+            HeaderText = "当前阶段",
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+            FillWeight = 27,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Progress",
+            HeaderText = "进度",
+            Width = 82,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+        _queueGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "Elapsed",
+            HeaderText = "耗时",
+            Width = 84,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        });
+
+        _queueGrid.DefaultCellStyle.SelectionBackColor = SystemColors.Highlight;
+        _queueGrid.DefaultCellStyle.SelectionForeColor = SystemColors.HighlightText;
+        _queueGrid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
     }
 
     private void BuildLayout()
@@ -135,34 +200,89 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(14),
             ColumnCount = 1,
-            RowCount = 9,
+            RowCount = 8,
             AutoScroll = true
         };
 
-        for (var i = 0; i < 9; i++)
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var title = new Label
         {
-            Text = "离线录音转写",
+            Text = "离线录音批量转写",
             Font = new Font(Font.FontFamily, 18F, FontStyle.Bold),
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 10)
         };
         root.Controls.Add(title, 0, 0);
 
-        _dropPanel.Controls.Add(_dropLabel);
-        root.Controls.Add(_dropPanel, 0, 1);
-
-        root.Controls.Add(BuildPathRow("录音文件", _audioPath, "选择…", BrowseAudio), 0, 2);
-        root.Controls.Add(BuildPathRow("模型文件", _modelPath, "选择…", BrowseModel), 0, 3);
-        root.Controls.Add(BuildPathRow("输出目录", _outputPath, "选择…", BrowseOutputDirectory), 0, 4);
-        root.Controls.Add(BuildOptionsRow(), 0, 5);
-        root.Controls.Add(BuildProgressGroup(), 0, 6);
-        root.Controls.Add(BuildResourceGroup(), 0, 7);
-        root.Controls.Add(BuildActionRow(), 0, 8);
+        root.Controls.Add(BuildQueueGroup(), 0, 1);
+        root.Controls.Add(BuildPathRow("模型文件", _modelPath, "选择…", BrowseModel), 0, 2);
+        root.Controls.Add(BuildPathRow("输出目录", _outputPath, "选择…", BrowseOutputDirectory), 0, 3);
+        root.Controls.Add(BuildOptionsRow(), 0, 4);
+        root.Controls.Add(BuildProgressGroup(), 0, 5);
+        root.Controls.Add(BuildResourceGroup(), 0, 6);
+        root.Controls.Add(BuildActionRow(), 0, 7);
 
         Controls.Add(root);
+    }
+
+    private Control BuildQueueGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "转写队列",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10),
+            Margin = new Padding(0, 0, 0, 4),
+            AllowDrop = true
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var toolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0, 0, 0, 7)
+        };
+        toolbar.Controls.Add(_addFilesButton);
+        toolbar.Controls.Add(_removeFilesButton);
+        toolbar.Controls.Add(_clearQueueButton);
+        toolbar.Controls.Add(_moveUpButton);
+        toolbar.Controls.Add(_moveDownButton);
+
+        var dragHint = new Label
+        {
+            Text = "也可以直接把多个录音文件拖到队列中",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(12, 6, 0, 0)
+        };
+        toolbar.Controls.Add(dragHint);
+
+        _queueSummaryLabel.Margin = new Padding(0, 7, 0, 0);
+
+        layout.Controls.Add(toolbar, 0, 0);
+        layout.Controls.Add(_queueGrid, 0, 1);
+        layout.Controls.Add(_queueSummaryLabel, 0, 2);
+        group.Controls.Add(layout);
+        return group;
     }
 
     private Control BuildPathRow(string labelText, TextBox textBox, string buttonText, EventHandler onClick)
@@ -213,7 +333,7 @@ public sealed class MainForm : Form
     {
         var group = new GroupBox
         {
-            Text = "处理进度",
+            Text = "当前文件进度",
             Dock = DockStyle.Top,
             AutoSize = true,
             Padding = new Padding(10),
@@ -225,7 +345,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Top,
             AutoSize = true,
             ColumnCount = 2,
-            RowCount = 4
+            RowCount = 5
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -233,12 +353,13 @@ public sealed class MainForm : Form
         _progressPercentLabel.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
         _progressPercentLabel.Margin = new Padding(10, 0, 0, 0);
 
-        layout.Controls.Add(_phaseLabel, 0, 0);
-        layout.Controls.Add(_progressPercentLabel, 1, 0);
-        layout.Controls.Add(_progress, 0, 1);
+        layout.Controls.Add(_currentFileLabel, 0, 0);
+        layout.SetColumnSpan(_currentFileLabel, 2);
+        layout.Controls.Add(_phaseLabel, 0, 1);
+        layout.Controls.Add(_progressPercentLabel, 1, 1);
+        layout.Controls.Add(_progress, 0, 2);
         layout.SetColumnSpan(_progress, 2);
-
-        layout.Controls.Add(_mediaPositionLabel, 0, 2);
+        layout.Controls.Add(_mediaPositionLabel, 0, 3);
         layout.SetColumnSpan(_mediaPositionLabel, 2);
 
         var times = new FlowLayoutPanel
@@ -251,7 +372,7 @@ public sealed class MainForm : Form
         _elapsedLabel.Margin = new Padding(0, 0, 24, 0);
         times.Controls.Add(_elapsedLabel);
         times.Controls.Add(_remainingLabel);
-        layout.Controls.Add(times, 0, 3);
+        layout.Controls.Add(times, 0, 4);
         layout.SetColumnSpan(times, 2);
 
         group.Controls.Add(layout);
@@ -286,7 +407,7 @@ public sealed class MainForm : Form
 
         var note = new Label
         {
-            Text = "CPU 上限通过线程数和低优先级控制；GPU 上限采用进程占空比节流，属于近似控制。",
+            Text = "队列严格串行处理；CPU 上限通过线程数和低优先级控制，GPU 上限采用近似占空比节流。",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             Margin = new Padding(3, 8, 3, 0)
@@ -354,8 +475,14 @@ public sealed class MainForm : Form
 
     private void WireEvents()
     {
-        _startButton.Click += StartTranscriptionAsync;
-        _cancelButton.Click += (_, _) => _cancellation?.Cancel();
+        _addFilesButton.Click += BrowseAudioFiles;
+        _removeFilesButton.Click += (_, _) => RemoveSelectedQueueItems();
+        _clearQueueButton.Click += (_, _) => ClearQueue();
+        _moveUpButton.Click += (_, _) => MoveSelectedQueueItem(-1);
+        _moveDownButton.Click += (_, _) => MoveSelectedQueueItem(1);
+
+        _startButton.Click += StartQueueAsync;
+        _cancelButton.Click += (_, _) => _queueCancellation?.Cancel();
         _openOutputButton.Click += (_, _) => OpenOutputDirectory();
         _openTempButton.Click += (_, _) => OpenTemporaryDirectory();
 
@@ -363,6 +490,12 @@ public sealed class MainForm : Form
         {
             UpdateResourceUsage();
             UpdateElapsedAndRemaining();
+
+            if (_currentQueueItem is not null && _taskStopwatch.IsRunning)
+            {
+                _currentQueueItem.Elapsed = _taskStopwatch.Elapsed;
+                UpdateQueueRow(_currentQueueItem);
+            }
         };
 
         _cpuLimit.ValueChanged += (_, _) => UpdateCpuLimitHint();
@@ -373,18 +506,283 @@ public sealed class MainForm : Form
         {
             _usageTimer.Stop();
             _resourceMonitor.Dispose();
-            _cancellation?.Cancel();
+            _queueCancellation?.Cancel();
         };
 
         DragEnter += HandleDragEnter;
         DragDrop += HandleDragDrop;
-        _dropPanel.DragEnter += HandleDragEnter;
-        _dropPanel.DragDrop += HandleDragDrop;
-        _dropLabel.DragEnter += HandleDragEnter;
-        _dropLabel.DragDrop += HandleDragDrop;
+        _queueGrid.DragEnter += HandleDragEnter;
+        _queueGrid.DragDrop += HandleDragDrop;
     }
 
-    private void HandlePipelineProgress(PipelineMessage message)
+    private void BrowseAudioFiles(object? sender, EventArgs e)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择一个或多个录音文件",
+            Multiselect = true,
+            Filter = "音频/视频文件|*.m4a;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.wma;*.mp4;*.mov|所有文件|*.*"
+        };
+
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            AddFiles(dialog.FileNames);
+    }
+
+    private void HandleDragEnter(object? sender, DragEventArgs e)
+    {
+        e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+    }
+
+    private void HandleDragDrop(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
+            return;
+
+        AddFiles(files.Where(File.Exists));
+    }
+
+    private void AddFiles(IEnumerable<string> files)
+    {
+        if (_queueRunning)
+            return;
+
+        var normalizedExisting = _queue
+            .Select(x => Path.GetFullPath(x.FilePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var added = 0;
+        string? firstAdded = null;
+
+        foreach (var file in files)
+        {
+            if (!File.Exists(file))
+                continue;
+
+            var fullPath = Path.GetFullPath(file);
+            if (!normalizedExisting.Add(fullPath))
+                continue;
+
+            _queue.Add(new TranscriptionQueueItem { FilePath = fullPath });
+            firstAdded ??= fullPath;
+            added++;
+        }
+
+        if (added == 0)
+            return;
+
+        if (_queue.Count == added && firstAdded is not null)
+        {
+            var sourceDirectory = Path.GetDirectoryName(firstAdded);
+            if (!string.IsNullOrWhiteSpace(sourceDirectory))
+                _outputPath.Text = Path.Combine(sourceDirectory, "transcripts");
+        }
+
+        RebuildQueueGrid();
+        UpdateQueueSummary();
+        _status.Text = $"已加入 {added} 个文件，队列共 {_queue.Count} 个。";
+    }
+
+    private void RemoveSelectedQueueItems()
+    {
+        if (_queueRunning || _queueGrid.SelectedRows.Count == 0)
+            return;
+
+        var selectedIds = _queueGrid.SelectedRows
+            .Cast<DataGridViewRow>()
+            .Where(row => row.Tag is Guid)
+            .Select(row => (Guid)row.Tag!)
+            .ToHashSet();
+
+        _queue.RemoveAll(item => selectedIds.Contains(item.Id));
+        RebuildQueueGrid();
+        UpdateQueueSummary();
+    }
+
+    private void ClearQueue()
+    {
+        if (_queueRunning)
+            return;
+
+        _queue.Clear();
+        _lastExportedFiles = [];
+        RebuildQueueGrid();
+        UpdateQueueSummary();
+        ResetProgressUi();
+        _status.Text = "队列已清空";
+    }
+
+    private void MoveSelectedQueueItem(int offset)
+    {
+        if (_queueRunning || _queueGrid.SelectedRows.Count != 1)
+            return;
+
+        var row = _queueGrid.SelectedRows[0];
+        if (row.Tag is not Guid id)
+            return;
+
+        var index = _queue.FindIndex(item => item.Id == id);
+        if (index < 0)
+            return;
+
+        var newIndex = index + offset;
+        if (newIndex < 0 || newIndex >= _queue.Count)
+            return;
+
+        var item = _queue[index];
+        _queue.RemoveAt(index);
+        _queue.Insert(newIndex, item);
+
+        RebuildQueueGrid();
+        foreach (DataGridViewRow candidate in _queueGrid.Rows)
+        {
+            if (candidate.Tag is Guid candidateId && candidateId == item.Id)
+            {
+                candidate.Selected = true;
+                _queueGrid.CurrentCell = candidate.Cells[1];
+                break;
+            }
+        }
+    }
+
+    private async void StartQueueAsync(object? sender, EventArgs e)
+    {
+        if (_queueRunning)
+            return;
+
+        var pendingItems = _queue.Where(item => item.Status == TranscriptionQueueStatus.Pending).ToList();
+        if (pendingItems.Count == 0)
+        {
+            MessageBox.Show(this, "队列中没有等待处理的文件。", "Speak2Text", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            ValidateRuntimeFiles();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Speak2Text", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        _queueRunning = true;
+        _queueCancellation = new CancellationTokenSource();
+        SetBusy(true);
+
+        var cancelled = false;
+
+        try
+        {
+            foreach (var item in _queue)
+            {
+                if (item.Status != TranscriptionQueueStatus.Pending)
+                    continue;
+
+                if (_queueCancellation.IsCancellationRequested)
+                {
+                    cancelled = true;
+                    break;
+                }
+
+                _currentQueueItem = item;
+                PrepareQueueItemForRun(item);
+                ResetProgressUi();
+                _currentFileLabel.Text = $"当前文件：{item.FileName}";
+                _taskStopwatch.Restart();
+
+                var options = BuildOptions(item.FilePath);
+                var progress = new Progress<PipelineMessage>(message => HandlePipelineProgress(item, message));
+
+                try
+                {
+                    var result = await _pipeline.RunAsync(options, progress, _queueCancellation.Token);
+
+                    _taskStopwatch.Stop();
+                    item.Elapsed = _taskStopwatch.Elapsed;
+                    item.Status = TranscriptionQueueStatus.Completed;
+                    item.Phase = "已完成";
+                    item.Percent = 100;
+                    item.IsEstimate = false;
+                    item.ExportedFiles = result.ExportedFiles;
+                    _lastExportedFiles = result.ExportedFiles;
+                    UpdateQueueRow(item);
+                }
+                catch (OperationCanceledException)
+                {
+                    _taskStopwatch.Stop();
+                    item.Elapsed = _taskStopwatch.Elapsed;
+                    item.Status = TranscriptionQueueStatus.Cancelled;
+                    item.Phase = "已取消";
+                    item.Percent = null;
+                    item.IsEstimate = false;
+                    UpdateQueueRow(item);
+                    cancelled = true;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _taskStopwatch.Stop();
+                    item.Elapsed = _taskStopwatch.Elapsed;
+                    item.Status = TranscriptionQueueStatus.Failed;
+                    item.Phase = "失败";
+                    item.Percent = null;
+                    item.ErrorMessage = ex.Message;
+                    UpdateQueueRow(item);
+                }
+
+                UpdateQueueSummary();
+            }
+        }
+        finally
+        {
+            _taskStopwatch.Stop();
+            _phaseStopwatch.Stop();
+            _currentQueueItem = null;
+
+            _queueCancellation.Dispose();
+            _queueCancellation = null;
+            _queueRunning = false;
+            SetBusy(false);
+            UpdateQueueSummary();
+
+            var completed = _queue.Count(x => x.Status == TranscriptionQueueStatus.Completed);
+            var failed = _queue.Count(x => x.Status == TranscriptionQueueStatus.Failed);
+            var pending = _queue.Count(x => x.Status == TranscriptionQueueStatus.Pending);
+
+            if (cancelled)
+            {
+                _status.Text = $"队列已停止：完成 {completed}，失败 {failed}，待处理 {pending}。再次点击“开始队列”可继续等待项。";
+                _phaseLabel.Text = "阶段：队列已停止";
+                _remainingLabel.Text = "预计剩余：--";
+            }
+            else
+            {
+                _status.Text = failed > 0
+                    ? $"队列处理结束：完成 {completed}，失败 {failed}。"
+                    : $"队列处理完成：共完成 {completed} 个文件。";
+                _phaseLabel.Text = "阶段：队列完成";
+                _remainingLabel.Text = "预计剩余：00:00";
+            }
+        }
+    }
+
+    private void PrepareQueueItemForRun(TranscriptionQueueItem item)
+    {
+        item.Status = TranscriptionQueueStatus.Running;
+        item.Phase = "准备开始";
+        item.Percent = 0;
+        item.IsEstimate = false;
+        item.Elapsed = TimeSpan.Zero;
+        item.ErrorMessage = null;
+        item.ExportedFiles = [];
+        UpdateQueueRow(item);
+        UpdateQueueSummary();
+    }
+
+    private void HandlePipelineProgress(TranscriptionQueueItem item, PipelineMessage message)
     {
         var phaseKey = $"{message.Stage}:{message.Phase}";
         if (!string.Equals(phaseKey, _currentPhaseKey, StringComparison.Ordinal))
@@ -393,10 +791,16 @@ public sealed class MainForm : Form
             _phaseStopwatch.Restart();
         }
 
-        _status.Text = message.Message;
+        _status.Text = $"[{GetQueuePosition(item)}] {message.Message}";
         _phaseLabel.Text = $"阶段：{GetPhaseDisplayName(message.Phase)}";
         _currentPhasePercent = message.Percent;
         _currentPhaseEstimate = message.IsEstimate;
+
+        item.Phase = GetPhaseDisplayName(message.Phase);
+        item.Percent = message.Percent;
+        item.IsEstimate = message.IsEstimate;
+        item.Elapsed = _taskStopwatch.Elapsed;
+        UpdateQueueRow(item);
 
         if (message.Percent is double percent)
         {
@@ -424,14 +828,13 @@ public sealed class MainForm : Form
                 : "处理位置：--";
         }
 
-        if (message.Stage == PipelineStage.Completed)
-        {
-            _taskStopwatch.Stop();
-            _phaseStopwatch.Stop();
-            _remainingLabel.Text = "预计剩余：00:00";
-        }
-
         UpdateElapsedAndRemaining();
+    }
+
+    private string GetQueuePosition(TranscriptionQueueItem item)
+    {
+        var index = _queue.FindIndex(x => x.Id == item.Id);
+        return index >= 0 ? $"{index + 1}/{_queue.Count}" : $"?/{_queue.Count}";
     }
 
     private static string GetPhaseDisplayName(string phase)
@@ -450,10 +853,90 @@ public sealed class MainForm : Form
             _ => phase
         };
 
+    private void RebuildQueueGrid()
+    {
+        _queueGrid.Rows.Clear();
+
+        for (var i = 0; i < _queue.Count; i++)
+        {
+            var item = _queue[i];
+            var rowIndex = _queueGrid.Rows.Add(
+                i + 1,
+                item.FileName,
+                GetStatusText(item.Status),
+                item.Phase,
+                GetProgressText(item),
+                FormatDuration(item.Elapsed));
+
+            var row = _queueGrid.Rows[rowIndex];
+            row.Tag = item.Id;
+            row.Cells["FileName"].ToolTipText = item.FilePath;
+
+            if (!string.IsNullOrWhiteSpace(item.ErrorMessage))
+                row.Cells["Phase"].ToolTipText = item.ErrorMessage;
+        }
+    }
+
+    private void UpdateQueueRow(TranscriptionQueueItem item)
+    {
+        foreach (DataGridViewRow row in _queueGrid.Rows)
+        {
+            if (row.Tag is not Guid id || id != item.Id)
+                continue;
+
+            row.Cells["Status"].Value = GetStatusText(item.Status);
+            row.Cells["Phase"].Value = item.Phase;
+            row.Cells["Progress"].Value = GetProgressText(item);
+            row.Cells["Elapsed"].Value = FormatDuration(item.Elapsed);
+            row.Cells["Phase"].ToolTipText = item.ErrorMessage ?? string.Empty;
+            return;
+        }
+    }
+
+    private static string GetStatusText(TranscriptionQueueStatus status)
+        => status switch
+        {
+            TranscriptionQueueStatus.Pending => "等待中",
+            TranscriptionQueueStatus.Running => "处理中",
+            TranscriptionQueueStatus.Completed => "已完成",
+            TranscriptionQueueStatus.Failed => "失败",
+            TranscriptionQueueStatus.Cancelled => "已取消",
+            _ => status.ToString()
+        };
+
+    private static string GetProgressText(TranscriptionQueueItem item)
+    {
+        if (item.Status == TranscriptionQueueStatus.Completed)
+            return "100%";
+
+        if (item.Percent is not double percent)
+            return item.Status == TranscriptionQueueStatus.Running ? "--" : string.Empty;
+
+        return $"{(item.IsEstimate ? "约 " : string.Empty)}{percent:0.0}%";
+    }
+
+    private void UpdateQueueSummary()
+    {
+        if (_queue.Count == 0)
+        {
+            _queueSummaryLabel.Text = "队列为空，可一次选择或拖入多个录音文件。";
+            return;
+        }
+
+        var pending = _queue.Count(x => x.Status == TranscriptionQueueStatus.Pending);
+        var running = _queue.Count(x => x.Status == TranscriptionQueueStatus.Running);
+        var completed = _queue.Count(x => x.Status == TranscriptionQueueStatus.Completed);
+        var failed = _queue.Count(x => x.Status == TranscriptionQueueStatus.Failed);
+        var cancelled = _queue.Count(x => x.Status == TranscriptionQueueStatus.Cancelled);
+
+        _queueSummaryLabel.Text =
+            $"共 {_queue.Count} 个文件｜等待 {pending}｜处理中 {running}｜完成 {completed}｜失败 {failed}｜取消 {cancelled}";
+    }
+
     private void UpdateElapsedAndRemaining()
     {
         if (_taskStopwatch.IsRunning || _taskStopwatch.Elapsed > TimeSpan.Zero)
-            _elapsedLabel.Text = $"已耗时：{FormatDuration(_taskStopwatch.Elapsed)}";
+            _elapsedLabel.Text = $"当前文件已耗时：{FormatDuration(_taskStopwatch.Elapsed)}";
 
         if (!_phaseStopwatch.IsRunning ||
             _currentPhasePercent is not double percent ||
@@ -486,6 +969,24 @@ public sealed class MainForm : Form
         return value.TotalHours >= 1
             ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}"
             : $"{value.Minutes:00}:{value.Seconds:00}";
+    }
+
+    private void ResetProgressUi()
+    {
+        _currentPhaseKey = string.Empty;
+        _currentPhasePercent = null;
+        _currentPhaseEstimate = false;
+        _taskStopwatch.Reset();
+        _phaseStopwatch.Reset();
+
+        _currentFileLabel.Text = "当前文件：--";
+        _phaseLabel.Text = "阶段：准备开始";
+        _progress.Style = ProgressBarStyle.Blocks;
+        _progress.Value = 0;
+        _progressPercentLabel.Text = "0.0%";
+        _mediaPositionLabel.Text = "处理位置：--";
+        _elapsedLabel.Text = "当前文件已耗时：00:00";
+        _remainingLabel.Text = "预计剩余：--";
     }
 
     private void UpdateResourceUsage()
@@ -522,31 +1023,6 @@ public sealed class MainForm : Form
         _cpuLimitHint.Text = $"≈ {threads}/{logical} 线程";
     }
 
-    private void HandleDragEnter(object? sender, DragEventArgs e)
-    {
-        e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
-            ? DragDropEffects.Copy
-            : DragDropEffects.None;
-    }
-
-    private void HandleDragDrop(object? sender, DragEventArgs e)
-    {
-        if (e.Data?.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
-            return;
-        SetAudioFile(files[0]);
-    }
-
-    private void BrowseAudio(object? sender, EventArgs e)
-    {
-        using var dialog = new OpenFileDialog
-        {
-            Title = "选择录音文件",
-            Filter = "音频文件|*.m4a;*.mp3;*.wav;*.aac;*.flac;*.ogg;*.wma;*.mp4;*.mov|所有文件|*.*"
-        };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-            SetAudioFile(dialog.FileName);
-    }
-
     private void BrowseModel(object? sender, EventArgs e)
     {
         using var dialog = new OpenFileDialog
@@ -558,6 +1034,7 @@ public sealed class MainForm : Form
                 ? Path.GetDirectoryName(_modelPath.Text)
                 : AppPaths.ModelsDirectory
         };
+
         if (dialog.ShowDialog(this) == DialogResult.OK)
             _modelPath.Text = dialog.FileName;
     }
@@ -566,102 +1043,17 @@ public sealed class MainForm : Form
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "选择转写结果输出目录",
+            Description = "选择整个队列的结果输出目录",
             UseDescriptionForTitle = true,
             SelectedPath = Directory.Exists(_outputPath.Text) ? _outputPath.Text : string.Empty,
             ShowNewFolderButton = true
         };
+
         if (dialog.ShowDialog(this) == DialogResult.OK)
             _outputPath.Text = dialog.SelectedPath;
     }
 
-    private void SetAudioFile(string path)
-    {
-        if (!File.Exists(path))
-            return;
-
-        _audioPath.Text = path;
-        _dropLabel.Text = Path.GetFileName(path) + "\r\n已选择，点击“开始转写”即可处理";
-
-        var sourceDirectory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(sourceDirectory))
-            _outputPath.Text = Path.Combine(sourceDirectory, "transcripts");
-    }
-
-    private async void StartTranscriptionAsync(object? sender, EventArgs e)
-    {
-        if (_cancellation is not null)
-            return;
-
-        try
-        {
-            var options = BuildOptions();
-            ValidateRuntimeFiles(options);
-
-            SetBusy(true);
-            ResetProgressUi();
-
-            _lastExportedFiles = [];
-            _cancellation = new CancellationTokenSource();
-            _taskStopwatch.Restart();
-
-            var progress = new Progress<PipelineMessage>(HandlePipelineProgress);
-            var result = await _pipeline.RunAsync(options, progress, _cancellation.Token);
-
-            _lastExportedFiles = result.ExportedFiles;
-            _status.Text = $"完成：{result.Transcript.Segments.Count} 个片段，{result.Transcript.SpeakerIds.Count()} 位说话人";
-            _openOutputButton.Enabled = true;
-        }
-        catch (OperationCanceledException)
-        {
-            _taskStopwatch.Stop();
-            _phaseStopwatch.Stop();
-            _status.Text = "已取消";
-            _phaseLabel.Text = "阶段：已取消";
-            _progress.Style = ProgressBarStyle.Blocks;
-            _progress.Value = 0;
-            _progressPercentLabel.Text = "--";
-            _remainingLabel.Text = "预计剩余：--";
-        }
-        catch (Exception ex)
-        {
-            _taskStopwatch.Stop();
-            _phaseStopwatch.Stop();
-            _status.Text = "处理失败";
-            _phaseLabel.Text = "阶段：处理失败";
-            _progress.Style = ProgressBarStyle.Blocks;
-            _progress.Value = 0;
-            _progressPercentLabel.Text = "--";
-            _remainingLabel.Text = "预计剩余：--";
-            MessageBox.Show(this, ex.Message, "Speak2Text", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            _cancellation?.Dispose();
-            _cancellation = null;
-            SetBusy(false);
-            UpdateElapsedAndRemaining();
-        }
-    }
-
-    private void ResetProgressUi()
-    {
-        _currentPhaseKey = string.Empty;
-        _currentPhasePercent = null;
-        _currentPhaseEstimate = false;
-        _taskStopwatch.Reset();
-        _phaseStopwatch.Reset();
-
-        _phaseLabel.Text = "阶段：准备开始";
-        _progress.Style = ProgressBarStyle.Blocks;
-        _progress.Value = 0;
-        _progressPercentLabel.Text = "0.0%";
-        _mediaPositionLabel.Text = "处理位置：--";
-        _elapsedLabel.Text = "已耗时：00:00";
-        _remainingLabel.Text = "预计剩余：--";
-    }
-
-    private TranscriptionOptions BuildOptions()
+    private TranscriptionOptions BuildOptions(string audioPath)
     {
         var backend = _backend.SelectedIndex switch
         {
@@ -679,7 +1071,7 @@ public sealed class MainForm : Form
 
         return new TranscriptionOptions
         {
-            AudioPath = _audioPath.Text.Trim(),
+            AudioPath = audioPath,
             ModelPath = _modelPath.Text.Trim(),
             OutputDirectory = _outputPath.Text.Trim(),
             Backend = backend,
@@ -695,27 +1087,35 @@ public sealed class MainForm : Form
         };
     }
 
-    private void ValidateRuntimeFiles(TranscriptionOptions options)
+    private void ValidateRuntimeFiles()
     {
-        if (string.IsNullOrWhiteSpace(options.AudioPath))
-            throw new InvalidOperationException("请先选择一个录音文件。");
+        if (_queue.Count == 0)
+            throw new InvalidOperationException("请先向队列中添加录音文件。");
         if (!File.Exists(AppPaths.FfmpegPath))
             throw new FileNotFoundException("缺少 engine\\ffmpeg.exe。", AppPaths.FfmpegPath);
         if (!File.Exists(AppPaths.FfprobePath))
             throw new FileNotFoundException("缺少 engine\\ffprobe.exe。请重新下载最新 Action 便携包。", AppPaths.FfprobePath);
         if (!File.Exists(AppPaths.TranscribeCliPath))
             throw new FileNotFoundException("缺少 engine\\transcribe-cli.exe。", AppPaths.TranscribeCliPath);
-        if (!File.Exists(options.ModelPath))
-            throw new FileNotFoundException("缺少 MOSS GGUF 模型。默认应放在 models\\MOSS-Transcribe-Diarize-Q8_0.gguf。", options.ModelPath);
+        if (!File.Exists(_modelPath.Text.Trim()))
+            throw new FileNotFoundException("缺少 MOSS GGUF 模型。默认应放在 models\\MOSS-Transcribe-Diarize-Q8_0.gguf。", _modelPath.Text.Trim());
+        if (string.IsNullOrWhiteSpace(_outputPath.Text))
+            throw new InvalidOperationException("请选择输出目录。");
         if (!_markdown.Checked && !_text.Checked && !_srt.Checked && !_json.Checked)
             throw new InvalidOperationException("请至少选择一种输出格式。");
     }
 
     private void SetBusy(bool busy)
     {
+        _addFilesButton.Enabled = !busy;
+        _removeFilesButton.Enabled = !busy;
+        _clearQueueButton.Enabled = !busy;
+        _moveUpButton.Enabled = !busy;
+        _moveDownButton.Enabled = !busy;
+
         _startButton.Enabled = !busy;
         _cancelButton.Enabled = busy;
-        _audioPath.Enabled = !busy;
+
         _modelPath.Enabled = !busy;
         _outputPath.Enabled = !busy;
         _backend.Enabled = !busy;
@@ -728,12 +1128,9 @@ public sealed class MainForm : Form
         _limitGpu.Enabled = !busy;
         _cpuLimit.Enabled = !busy && _limitCpu.Checked;
         _gpuLimit.Enabled = !busy && _limitGpu.Checked;
-        _dropPanel.AllowDrop = !busy;
-        _dropLabel.AllowDrop = !busy;
-        AllowDrop = !busy;
 
-        if (busy)
-            _openOutputButton.Enabled = false;
+        _queueGrid.AllowDrop = !busy;
+        AllowDrop = !busy;
     }
 
     private void OpenOutputDirectory()
@@ -742,9 +1139,10 @@ public sealed class MainForm : Form
             ? Path.GetDirectoryName(_lastExportedFiles[0])
             : _outputPath.Text;
 
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        if (string.IsNullOrWhiteSpace(directory))
             return;
 
+        Directory.CreateDirectory(directory);
         OpenDirectory(directory);
     }
 
