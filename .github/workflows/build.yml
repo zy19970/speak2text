@@ -5,30 +5,142 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  TRANSCRIBE_CPP_REF: v0.2.3
+  VULKAN_VERSION: "1.4.350.0"
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-9.0.zip
 
 jobs:
   windows-build:
     runs-on: windows-latest
+    timeout-minutes: 45
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Speak2Text
+        uses: actions/checkout@v4
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Restore
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan_sdk.exe"
+          curl.exe -L --fail --retry 3 -o $installer "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkan_sdk.exe"
+          & $installer --accept-licenses --default-answer --confirm-command install
+          if ($LASTEXITCODE -ne 0) {
+            throw "Vulkan SDK installer failed with exit code $LASTEXITCODE"
+          }
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$env:VULKAN_VERSION\bin"
+
+      - name: Build transcribe.cpp CLI (CPU + Vulkan)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Keep these paths short: ggml-vulkan has deeply nested generated paths on Windows.
+          $src = "C:\tc"
+          $build = "C:\tb"
+
+          if (Test-Path $src) { Remove-Item $src -Recurse -Force }
+          if (Test-Path $build) { Remove-Item $build -Recurse -Force }
+
+          git clone --depth 1 --branch $env:TRANSCRIBE_CPP_REF https://github.com/handy-computer/transcribe.cpp $src
+          if ($LASTEXITCODE -ne 0) { throw "Failed to clone transcribe.cpp" }
+
+          cmake -S $src -B $build -G "Visual Studio 17 2022" -A x64 `
+            -DTRANSCRIBE_VULKAN=ON `
+            -DTRANSCRIBE_BUILD_TESTS=OFF `
+            -DTRANSCRIBE_BUILD_EXAMPLES=ON `
+            -DTRANSCRIBE_BUILD_TOOLS=OFF `
+            -DTRANSCRIBE_USE_OPENMP=OFF
+
+          if ($LASTEXITCODE -ne 0) { throw "transcribe.cpp configure failed" }
+
+          cmake --build $build --target transcribe-cli --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "transcribe-cli build failed" }
+
+          $cli = Join-Path $build "bin\Release\transcribe-cli.exe"
+          if (-not (Test-Path $cli)) {
+            throw "transcribe-cli.exe was not produced at $cli"
+          }
+
+          New-Item -ItemType Directory -Force -Path "engine" | Out-Null
+          Copy-Item $cli "engine\transcribe-cli.exe" -Force
+
+          & "engine\transcribe-cli.exe" --help | Select-Object -First 20
+
+      - name: Download portable FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "ffmpeg"
+
+          curl.exe -L --fail --retry 3 -o $archive $env:FFMPEG_URL
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg download failed" }
+
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+
+          $ffmpeg = Get-ChildItem $extract -Recurse -File -Filter "ffmpeg.exe" |
+            Select-Object -First 1
+
+          if (-not $ffmpeg) {
+            throw "ffmpeg.exe was not found in downloaded archive"
+          }
+
+          New-Item -ItemType Directory -Force -Path "engine" | Out-Null
+          Copy-Item $ffmpeg.FullName "engine\ffmpeg.exe" -Force
+
+          & "engine\ffmpeg.exe" -version | Select-Object -First 3
+
+      - name: Restore Speak2Text
         run: dotnet restore src/Speak2Text/Speak2Text.csproj
 
-      - name: Build
+      - name: Build Speak2Text
         run: dotnet build src/Speak2Text/Speak2Text.csproj -c Release --no-restore
 
-      - name: Publish portable front-end
+      - name: Publish complete portable package
         shell: pwsh
-        run: ./scripts/publish-portable.ps1
+        run: ./scripts/publish-portable.ps1 -IncludeRuntimeFiles
+
+      - name: Verify portable package contents
+        shell: pwsh
+        run: |
+          $root = "dist\Speak2Text-win-x64"
+          $required = @(
+            "$root\Speak2Text.exe",
+            "$root\engine\ffmpeg.exe",
+            "$root\engine\transcribe-cli.exe"
+          )
+
+          foreach ($file in $required) {
+            if (-not (Test-Path $file)) {
+              throw "Portable package is missing: $file"
+            }
+          }
+
+          Write-Host "Portable package verified."
+          Get-ChildItem $root -Recurse -File |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
 
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
         with:
           name: Speak2Text-win-x64
           path: dist/Speak2Text-win-x64.zip
+          if-no-files-found: error
+          retention-days: 30
