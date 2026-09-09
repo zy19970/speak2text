@@ -18,3 +18,4 @@ models/*.gguf
 *.srt
 *.tmp
 transcripts/
+temp/
