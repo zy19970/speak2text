@@ -320,3 +320,17 @@ moss run: KV cache allocation failed
 ```
 
 程序会归类为 Vulkan 设备内存 / KV cache 分配失败，并自动进入 CPU 回退逻辑。
+
+
+## 中文路径兼容
+
+Windows 原生 `transcribe.cpp / ggml` 的部分代码路径仍可能经过系统多字节代码页转换。如果模型目录或临时目录包含中文、日文等非 ASCII 字符，某些机器会报：
+
+```text
+No mapping for the Unicode character exists in the target multi-byte code page.
+model load: backend error
+```
+
+Speak2Text 现在会在启动原生 MOSS 进程前自动检测模型路径和当前任务临时目录。如果包含非 ASCII 字符，会临时创建纯 ASCII 盘符映射，把模型、batch 文件和 WAV 以类似 `Z:\\MOSS-....gguf`、`Y:\\audio-16k-mono.wav` 的形式传给原生引擎。GGUF 模型不会被复制，因此不会额外占用约 1 GB 磁盘空间。任务结束后临时盘符映射会立即删除。
+
+FFmpeg、输出文件和 WinForms 本身仍然直接使用原始 Unicode 路径，因此录音文件名和输出目录可以继续包含中文。
