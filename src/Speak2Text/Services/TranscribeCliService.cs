@@ -24,10 +24,15 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         if (!File.Exists(options.ModelPath))
             throw new FileNotFoundException("未找到 MOSS GGUF 模型文件。", options.ModelPath);
 
+        using var nativePaths = NativePathBridge.Create(options.ModelPath, workDirectory);
+
         var batchFile = Path.Combine(workDirectory, "batch.txt");
+        var nativeWavPath = nativePaths.MapWorkPath(wavPath);
+        var nativeBatchFile = nativePaths.MapWorkPath(batchFile);
+
         await File.WriteAllTextAsync(
             batchFile,
-            wavPath + Environment.NewLine,
+            nativeWavPath + Environment.NewLine,
             new UTF8Encoding(false),
             cancellationToken);
 
@@ -35,7 +40,8 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
 
         var firstAttempt = await RunBackendAsync(
             requestedBackend,
-            batchFile,
+            nativePaths.ModelPath,
+            nativeBatchFile,
             options,
             onProgress,
             cancellationToken);
@@ -66,7 +72,8 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
 
         var cpuAttempt = await RunBackendAsync(
             "cpu",
-            batchFile,
+            nativePaths.ModelPath,
+            nativeBatchFile,
             options,
             onProgress,
             cancellationToken);
@@ -89,6 +96,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
 
     private async Task<ProcessResult> RunBackendAsync(
         string backend,
+        string modelPath,
         string batchFile,
         TranscriptionOptions options,
         Action<EngineProgress>? onProgress,
@@ -97,7 +105,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         var args = new List<string>
         {
             "-q",
-            "-m", options.ModelPath,
+            "-m", modelPath,
             "--diarize",
             "--timestamps", "segment",
             "--backend", backend
