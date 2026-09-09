@@ -61,7 +61,8 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
 
         onProgress?.Invoke(new EngineProgress(
             "MOSS_GPU_FALLBACK",
-            $"Vulkan 失败：{vulkanReason}；正在使用同一临时 WAV 自动切换 CPU 重试…"));
+            $"Vulkan 失败：{vulkanReason}；正在使用同一临时 WAV 自动切换 CPU 重试…",
+            DiagnosticDetail: TrimError(firstAttempt.StandardError)));
 
         var cpuAttempt = await RunBackendAsync(
             "cpu",
@@ -74,7 +75,8 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         {
             onProgress?.Invoke(new EngineProgress(
                 "MOSS_CPU_FALLBACK",
-                $"已自动切换 CPU 并继续处理。原 Vulkan 错误：{vulkanReason}"));
+                $"已自动切换 CPU 并继续处理。原 Vulkan 错误：{vulkanReason}",
+                DiagnosticDetail: TrimError(firstAttempt.StandardError)));
 
             return ParseJsonLines(cpuAttempt.StandardOutput, options, "cpu");
         }
