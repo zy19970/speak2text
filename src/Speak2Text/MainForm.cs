@@ -764,6 +764,7 @@ public sealed class MainForm : Form
                     item.ErrorMessage = ex.Message;
                     item.Note = SummarizeError(ex.Message);
                     UpdateQueueRow(item);
+                    ShowCurrentFileFailure(item, ex.Message);
                 }
 
                 UpdateQueueSummary();
@@ -785,10 +786,13 @@ public sealed class MainForm : Form
             var failed = _queue.Count(x => x.Status == TranscriptionQueueStatus.Failed);
             var pending = _queue.Count(x => x.Status == TranscriptionQueueStatus.Pending);
 
+            StopCurrentProgressAnimation();
+
             if (cancelled)
             {
                 _status.Text = $"队列已停止：完成 {completed}，失败 {failed}，待处理 {pending}。再次点击“开始队列”可继续等待项。";
                 _phaseLabel.Text = "阶段：队列已停止";
+                _progressPercentLabel.Text = "--";
                 _remainingLabel.Text = "预计剩余：--";
             }
             else
@@ -797,9 +801,32 @@ public sealed class MainForm : Form
                     ? $"队列处理结束：完成 {completed}，失败 {failed}。"
                     : $"队列处理完成：共完成 {completed} 个文件。";
                 _phaseLabel.Text = "阶段：队列完成";
+                _progressPercentLabel.Text = completed > 0 && failed == 0 ? "100%" : "--";
                 _remainingLabel.Text = "预计剩余：00:00";
             }
         }
+    }
+
+    private void ShowCurrentFileFailure(TranscriptionQueueItem item, string error)
+    {
+        _phaseStopwatch.Stop();
+        _currentPhasePercent = null;
+        _currentPhaseEstimate = false;
+
+        StopCurrentProgressAnimation();
+
+        _phaseLabel.Text = "阶段：失败";
+        _progressPercentLabel.Text = "失败";
+        _mediaPositionLabel.Text = "处理位置：--";
+        _remainingLabel.Text = "预计剩余：--";
+        _status.Text = $"[{GetQueuePosition(item)}] 失败：{SummarizeError(error)}";
+    }
+
+    private void StopCurrentProgressAnimation()
+    {
+        _progress.Style = ProgressBarStyle.Blocks;
+        _progress.Value = 0;
+        _mediaPositionLabel.Text = "处理位置：--";
     }
 
     private void PrepareQueueItemForRun(TranscriptionQueueItem item)
