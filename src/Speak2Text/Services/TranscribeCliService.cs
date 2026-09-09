@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Speak2Text.Models;
 using Speak2Text.Utilities;
 
@@ -50,9 +51,17 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        var vulkanReason = DescribeVulkanFailure(firstAttempt.StandardError);
+        if (vulkanReason is null)
+        {
+            throw new InvalidOperationException(
+                $"transcribe-cli {requestedBackend} 执行失败，但未检测到 Vulkan/显存类故障，因此不自动切换 CPU。\r\n" +
+                TrimError(firstAttempt.StandardError));
+        }
+
         onProgress?.Invoke(new EngineProgress(
             "MOSS_GPU_FALLBACK",
-            "GPU/Vulkan 转写失败，正在使用同一临时 WAV 自动切换 CPU 重试…"));
+            $"Vulkan 失败：{vulkanReason}；正在使用同一临时 WAV 自动切换 CPU 重试…"));
 
         var cpuAttempt = await RunBackendAsync(
             "cpu",
@@ -65,14 +74,14 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         {
             onProgress?.Invoke(new EngineProgress(
                 "MOSS_CPU_FALLBACK",
-                "GPU/Vulkan 转写失败，本文件已自动切换 CPU 并继续处理。"));
+                $"已自动切换 CPU 并继续处理。原 Vulkan 错误：{vulkanReason}"));
 
             return ParseJsonLines(cpuAttempt.StandardOutput, options, "cpu");
         }
 
         throw new InvalidOperationException(
-            "GPU/Vulkan 转写失败，自动切换 CPU 后仍然失败。\r\n\r\n" +
-            $"GPU/Vulkan 错误（退出代码 {firstAttempt.ExitCode}）：\r\n{TrimError(firstAttempt.StandardError)}\r\n\r\n" +
+            $"Vulkan 失败（{vulkanReason}），自动切换 CPU 后仍然失败。\r\n\r\n" +
+            $"Vulkan 原始错误（退出代码 {firstAttempt.ExitCode}）：\r\n{TrimError(firstAttempt.StandardError)}\r\n\r\n" +
             $"CPU 错误（退出代码 {cpuAttempt.ExitCode}）：\r\n{TrimError(cpuAttempt.StandardError)}");
     }
 
@@ -316,6 +325,92 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             Segments = segments,
             FullText = fullText
         };
+    }
+
+    private static string? DescribeVulkanFailure(string stderr)
+    {
+        if (string.IsNullOrWhiteSpace(stderr))
+            return null;
+
+        var text = stderr.ToLowerInvariant();
+
+        var hasVulkanSignature =
+            text.Contains("ggml_vulkan") ||
+            text.Contains("vulkan0") ||
+            text.Contains("vk_error_") ||
+            text.Contains("erroroutofdevicememory") ||
+            text.Contains("device memory allocation") ||
+            text.Contains("failed to allocate vulkan");
+
+        if (!hasVulkanSignature)
+            return null;
+
+        var requestedBytes = TryExtractRequestedBytes(stderr);
+
+        if (text.Contains("erroroutofdevicememory") ||
+            text.Contains("out_of_device_memory") ||
+            text.Contains("device memory allocation") ||
+            text.Contains("kv cache allocation failed") ||
+            text.Contains("buffer alloc failed"))
+        {
+            var size = requestedBytes is long bytes
+                ? $"，单次申请约 {FormatBytes(bytes)}"
+                : string.Empty;
+
+            return $"Vulkan 显存/设备内存不足或 KV cache 分配失败{size}";
+        }
+
+        if (text.Contains("buffer size limit") ||
+            text.Contains("exceeds device buffer size limit"))
+        {
+            var size = requestedBytes is long bytes
+                ? $"（请求约 {FormatBytes(bytes)}）"
+                : string.Empty;
+
+            return $"请求的 Vulkan 缓冲区超过设备/驱动单次 buffer 限制{size}";
+        }
+
+        if (text.Contains("device_lost") || text.Contains("device lost"))
+            return "Vulkan 设备丢失或显卡驱动发生重置";
+
+        if (text.Contains("failed to create") || text.Contains("init") || text.Contains("initializ"))
+            return "Vulkan 后端初始化失败";
+
+        return "Vulkan 后端执行失败";
+    }
+
+    private static long? TryExtractRequestedBytes(string stderr)
+    {
+        var patterns = new[]
+        {
+            @"device memory allocation of size\s+(\d+)\s+failed",
+            @"vulkan\d* buffer of size\s+(\d+)",
+            @"buffer of size\s+(\d+)"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(stderr, pattern, RegexOptions.IgnoreCase);
+            if (match.Success &&
+                long.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bytes) &&
+                bytes > 0)
+            {
+                return bytes;
+            }
+        }
+
+        return null;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double gib = 1024d * 1024d * 1024d;
+        const double mib = 1024d * 1024d;
+
+        if (bytes >= gib)
+            return $"{bytes / gib:0.0} GiB";
+
+        return $"{bytes / mib:0} MiB";
     }
 
     private static string TrimError(string value)
