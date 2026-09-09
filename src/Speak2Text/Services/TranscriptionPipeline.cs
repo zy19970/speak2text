@@ -27,26 +27,43 @@ public sealed class TranscriptionPipeline
 
         try
         {
-            progress?.Report(new PipelineMessage(PipelineStage.Converting, "正在将录音转换为 16 kHz 单声道 WAV…"));
+            progress?.Report(new PipelineMessage(
+                PipelineStage.Converting,
+                "FFMPEG",
+                "正在读取音频信息并准备转换…"));
+
             var wavPath = await _ffmpeg.ConvertToMono16KhzWavAsync(
                 options.AudioPath,
                 workDirectory,
                 options,
-                line => progress?.Report(new PipelineMessage(PipelineStage.Converting, line)),
+                engine => progress?.Report(PipelineMessage.FromEngine(PipelineStage.Converting, engine)),
                 cancellationToken);
 
-            progress?.Report(new PipelineMessage(PipelineStage.Transcribing, "正在运行 MOSS-Transcribe-Diarize…"));
+            progress?.Report(new PipelineMessage(
+                PipelineStage.Transcribing,
+                "MOSS_LOAD",
+                "正在加载 MOSS Q8 模型…"));
+
             var result = await _transcriber.TranscribeAsync(
                 wavPath,
                 options,
                 workDirectory,
-                line => progress?.Report(new PipelineMessage(PipelineStage.Transcribing, line)),
+                engine => progress?.Report(PipelineMessage.FromEngine(PipelineStage.Transcribing, engine)),
                 cancellationToken);
 
-            progress?.Report(new PipelineMessage(PipelineStage.Exporting, "正在生成 Markdown / TXT / SRT / JSON…"));
+            progress?.Report(new PipelineMessage(
+                PipelineStage.Exporting,
+                "EXPORT",
+                "正在生成 Markdown / TXT / SRT / JSON…"));
+
             var files = await _exporter.ExportAsync(result, options, cancellationToken);
 
-            progress?.Report(new PipelineMessage(PipelineStage.Completed, "转写完成。"));
+            progress?.Report(new PipelineMessage(
+                PipelineStage.Completed,
+                "DONE",
+                "转写完成。",
+                100));
+
             return new PipelineResult(result, files);
         }
         finally
@@ -87,5 +104,24 @@ public enum PipelineStage
     Completed
 }
 
-public sealed record PipelineMessage(PipelineStage Stage, string Message);
+public sealed record PipelineMessage(
+    PipelineStage Stage,
+    string Phase,
+    string Message,
+    double? Percent = null,
+    long? PositionMilliseconds = null,
+    long? DurationMilliseconds = null,
+    bool IsEstimate = false)
+{
+    public static PipelineMessage FromEngine(PipelineStage stage, EngineProgress engine)
+        => new(
+            stage,
+            engine.Phase,
+            engine.Message,
+            engine.Percent,
+            engine.PositionMilliseconds,
+            engine.DurationMilliseconds,
+            engine.IsEstimate);
+}
+
 public sealed record PipelineResult(TranscriptionResult Transcript, IReadOnlyList<string> ExportedFiles);
