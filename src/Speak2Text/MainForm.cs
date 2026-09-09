@@ -1176,20 +1176,12 @@ public sealed class MainForm : Form
         var durationText = FormatDuration(TimeSpan.FromMilliseconds(item.DurationMilliseconds.Value));
         var backendText = GetBackendDisplayName(selectedBackend);
 
-        var choice = MessageBox.Show(
-            this,
-            $"检测到长录音：{item.FileName}\r\n" +
-            $"时长：{durationText}\r\n" +
-            $"当前后端：{backendText}\r\n\r\n" +
-            "长录音在 Intel Iris Xe / Vulkan 上可能因 KV cache 或大缓冲区分配导致显存/设备内存不足。\r\n" +
-            "当前版本会对 GPU 长录音自动分段；若分段内仍出现 Vulkan 显存错误，还会自动回退 CPU。\r\n\r\n" +
-            "选择“是”：本文件直接改用 CPU\r\n" +
-            "选择“否”：继续当前 GPU/Auto 设置\r\n" +
-            "选择“取消”：停止整个队列",
-            "长录音预警",
-            MessageBoxButtons.YesNoCancel,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button1);
+        using var warningDialog = new LongAudioWarningDialog(
+            item.FileName,
+            durationText,
+            backendText);
+
+        var choice = warningDialog.ShowDialog(this);
 
         if (choice == DialogResult.Cancel)
         {
@@ -1204,7 +1196,7 @@ public sealed class MainForm : Form
         if (choice == DialogResult.Yes)
         {
             item.BackendOverride = "cpu";
-            item.Note = $"长录音 {durationText}：本文件已按预警改用 CPU";
+            item.Note = $"长录音 {durationText}：已选择或倒计时自动改用 CPU";
         }
         else
         {
