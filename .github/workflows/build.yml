@@ -3,9 +3,17 @@ name: build
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "README.md"
+      - "engine/README.md"
+      - "models/README.md"
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   TRANSCRIBE_CPP_REF: v0.2.3
@@ -25,6 +33,12 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+
+      - name: Restore Speak2Text
+        run: dotnet restore src/Speak2Text/Speak2Text.csproj
+
+      - name: Build Speak2Text
+        run: dotnet build src/Speak2Text/Speak2Text.csproj -c Release --no-restore
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -113,12 +127,6 @@ jobs:
           Copy-Item $ffmpeg.FullName "engine\ffmpeg.exe" -Force
 
           & "engine\ffmpeg.exe" -version | Select-Object -First 3
-
-      - name: Restore Speak2Text
-        run: dotnet restore src/Speak2Text/Speak2Text.csproj
-
-      - name: Build Speak2Text
-        run: dotnet build src/Speak2Text/Speak2Text.csproj -c Release --no-restore
 
       - name: Publish complete portable package
         shell: pwsh
