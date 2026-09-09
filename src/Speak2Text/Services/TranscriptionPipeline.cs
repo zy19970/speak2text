@@ -6,14 +6,15 @@ namespace Speak2Text.Services;
 public sealed class TranscriptionPipeline
 {
     private readonly FfmpegService _ffmpeg;
-    private readonly TranscribeCliService _transcriber;
+    private readonly LongAudioTranscriptionService _longAudioTranscriber;
     private readonly TranscriptExporter _exporter;
 
     public TranscriptionPipeline()
     {
         var processRunner = new ProcessRunner();
         _ffmpeg = new FfmpegService(processRunner);
-        _transcriber = new TranscribeCliService(processRunner);
+        var transcriber = new TranscribeCliService(processRunner);
+        _longAudioTranscriber = new LongAudioTranscriptionService(_ffmpeg, transcriber);
         _exporter = new TranscriptExporter();
     }
 
@@ -44,7 +45,7 @@ public sealed class TranscriptionPipeline
                 "MOSS_LOAD",
                 "正在加载 MOSS Q8 模型…"));
 
-            var result = await _transcriber.TranscribeAsync(
+            var result = await _longAudioTranscriber.TranscribeAsync(
                 wavPath,
                 options,
                 workDirectory,
@@ -98,14 +99,10 @@ public sealed class TranscriptionPipeline
             }
             catch when (attempt < attempts)
             {
-                // Windows can keep a just-terminated ffmpeg/transcribe handle
-                // alive briefly. Retry instead of immediately leaving a WAV.
                 await Task.Delay(250);
             }
             catch
             {
-                // Leave the directory visible in temp. Startup cleanup will
-                // remove it after 24 hours if it remains abandoned.
                 return;
             }
         }
