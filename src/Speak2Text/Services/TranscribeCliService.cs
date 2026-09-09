@@ -24,19 +24,86 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             throw new FileNotFoundException("未找到 MOSS GGUF 模型文件。", options.ModelPath);
 
         var batchFile = Path.Combine(workDirectory, "batch.txt");
-        await File.WriteAllTextAsync(batchFile, wavPath + Environment.NewLine, new UTF8Encoding(false), cancellationToken);
+        await File.WriteAllTextAsync(
+            batchFile,
+            wavPath + Environment.NewLine,
+            new UTF8Encoding(false),
+            cancellationToken);
 
-        var backend = NormalizeBackend(options.Backend);
+        var requestedBackend = NormalizeBackend(options.Backend);
+
+        var firstAttempt = await RunBackendAsync(
+            requestedBackend,
+            batchFile,
+            options,
+            onProgress,
+            cancellationToken);
+
+        if (firstAttempt.ExitCode == 0)
+            return ParseJsonLines(firstAttempt.StandardOutput, options, requestedBackend);
+
+        if (requestedBackend == "cpu")
+        {
+            throw new InvalidOperationException(
+                $"transcribe-cli CPU 执行失败，退出代码 {firstAttempt.ExitCode}。\r\n{firstAttempt.StandardError}".Trim());
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        onProgress?.Invoke(new EngineProgress(
+            "MOSS_GPU_FALLBACK",
+            "GPU/Vulkan 转写失败，正在使用同一临时 WAV 自动切换 CPU 重试…"));
+
+        var cpuAttempt = await RunBackendAsync(
+            "cpu",
+            batchFile,
+            options,
+            onProgress,
+            cancellationToken);
+
+        if (cpuAttempt.ExitCode == 0)
+        {
+            onProgress?.Invoke(new EngineProgress(
+                "MOSS_CPU_FALLBACK",
+                "GPU/Vulkan 转写失败，本文件已自动切换 CPU 并继续处理。"));
+
+            return ParseJsonLines(cpuAttempt.StandardOutput, options, "cpu");
+        }
+
+        throw new InvalidOperationException(
+            "GPU/Vulkan 转写失败，自动切换 CPU 后仍然失败。\r\n\r\n" +
+            $"GPU/Vulkan 错误（退出代码 {firstAttempt.ExitCode}）：\r\n{TrimError(firstAttempt.StandardError)}\r\n\r\n" +
+            $"CPU 错误（退出代码 {cpuAttempt.ExitCode}）：\r\n{TrimError(cpuAttempt.StandardError)}");
+    }
+
+    private async Task<ProcessResult> RunBackendAsync(
+        string backend,
+        string batchFile,
+        TranscriptionOptions options,
+        Action<EngineProgress>? onProgress,
+        CancellationToken cancellationToken)
+    {
         var args = new List<string>
         {
             "-q",
             "-m", options.ModelPath,
             "--diarize",
             "--timestamps", "segment",
-            "--backend", backend,
-            "--batch", batchFile,
-            "--batch-jsonl"
+            "--backend", backend
         };
+
+        // Long-form MOSS decoding grows its KV cache. Explicit F16 KV on
+        // GPU/Vulkan cuts this part of device memory roughly in half versus F32.
+        // CPU keeps AUTO because system RAM is much less constrained.
+        if (backend != "cpu")
+        {
+            args.Add("--kv-type");
+            args.Add("f16");
+        }
+
+        args.Add("--batch");
+        args.Add(batchFile);
+        args.Add("--batch-jsonl");
 
         if (options.CpuThreadLimit > 0)
         {
@@ -61,20 +128,15 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
                 onProgress?.Invoke(parsed);
         }
 
-        var result = await processRunner.RunAsync(
+        return await processRunner.RunAsync(
             AppPaths.TranscribeCliPath,
             args,
             AppPaths.EngineDirectory,
             HandleEngineLine,
             cancellationToken,
             new ProcessRunOptions(
-                LowPriority: options.LimitCpu || options.LimitGpu,
+                LowPriority: options.LimitCpu || (backend != "cpu" && options.LimitGpu),
                 DutyCyclePercent: dutyCycle));
-
-        if (result.ExitCode != 0)
-            throw new InvalidOperationException($"transcribe-cli 执行失败，退出代码 {result.ExitCode}。\r\n{result.StandardError}".Trim());
-
-        return ParseJsonLines(result.StandardOutput, options);
     }
 
     private static EngineProgress? ParseMossProgress(string line)
@@ -158,6 +220,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
     {
         if (total <= 0)
             return null;
+
         return Math.Clamp(done * 100d / total, 0d, 100d);
     }
 
@@ -169,27 +232,41 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             : $"{value.Minutes:00}:{value.Seconds:00}";
     }
 
-    private static TranscriptionResult ParseJsonLines(string jsonLines, TranscriptionOptions options)
+    private static TranscriptionResult ParseJsonLines(
+        string jsonLines,
+        TranscriptionOptions options,
+        string effectiveBackend)
     {
         string fullText = string.Empty;
         var segments = new List<TranscriptSegment>();
         string? reportedError = null;
 
-        foreach (var rawLine in jsonLines.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var rawLine in jsonLines.Split(
+                     new[] { '\r', '\n' },
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             try
             {
                 using var document = JsonDocument.Parse(rawLine);
                 var root = document.RootElement;
 
-                if (root.TryGetProperty("error", out var errorNode) && errorNode.ValueKind == JsonValueKind.String)
+                if (root.TryGetProperty("error", out var errorNode) &&
+                    errorNode.ValueKind == JsonValueKind.String)
+                {
                     reportedError = errorNode.GetString();
+                }
 
-                if (root.TryGetProperty("text", out var textNode) && textNode.ValueKind == JsonValueKind.String)
+                if (root.TryGetProperty("text", out var textNode) &&
+                    textNode.ValueKind == JsonValueKind.String)
+                {
                     fullText = textNode.GetString() ?? fullText;
+                }
 
-                if (!root.TryGetProperty("segments", out var segmentArray) || segmentArray.ValueKind != JsonValueKind.Array)
+                if (!root.TryGetProperty("segments", out var segmentArray) ||
+                    segmentArray.ValueKind != JsonValueKind.Array)
+                {
                     continue;
+                }
 
                 segments.Clear();
                 foreach (var segment in segmentArray.EnumerateArray())
@@ -206,7 +283,7 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             }
             catch (JsonException)
             {
-                // Quiet mode keeps stdout JSON-only; ignore incidental non-JSON lines defensively.
+                // Quiet mode keeps stdout JSON-only; ignore incidental lines defensively.
             }
         }
 
@@ -218,8 +295,12 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
 
         if (segments.Count == 0)
         {
-            var preview = jsonLines.Length > 1200 ? jsonLines[..1200] + "…" : jsonLines;
-            throw new InvalidOperationException($"未能从 transcribe-cli 输出中解析到转写结果。\r\n\r\nCLI 输出：\r\n{preview}");
+            var preview = jsonLines.Length > 1200
+                ? jsonLines[..1200] + "…"
+                : jsonLines;
+
+            throw new InvalidOperationException(
+                $"未能从 transcribe-cli 输出中解析到转写结果。\r\n\r\nCLI 输出：\r\n{preview}");
         }
 
         if (string.IsNullOrWhiteSpace(fullText))
@@ -229,12 +310,21 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
         {
             SourceAudioPath = options.AudioPath,
             ModelPath = options.ModelPath,
-            Backend = NormalizeBackend(options.Backend),
+            Backend = effectiveBackend,
             Language = options.Language,
             GeneratedAt = DateTimeOffset.Now,
             Segments = segments,
             FullText = fullText
         };
+    }
+
+    private static string TrimError(string value)
+    {
+        value = value.Trim();
+        if (value.Length <= 4000)
+            return value;
+
+        return "…" + value[^4000..];
     }
 
     private static string NormalizeBackend(string backend)
@@ -249,8 +339,12 @@ public sealed class TranscribeCliService(ProcessRunner processRunner)
             : string.Empty;
 
     private static long GetInt64(JsonElement element, string property)
-        => element.TryGetProperty(property, out var node) && node.TryGetInt64(out var value) ? value : 0;
+        => element.TryGetProperty(property, out var node) && node.TryGetInt64(out var value)
+            ? value
+            : 0;
 
     private static int GetInt32(JsonElement element, string property)
-        => element.TryGetProperty(property, out var node) && node.TryGetInt32(out var value) ? value : 0;
+        => element.TryGetProperty(property, out var node) && node.TryGetInt32(out var value)
+            ? value
+            : 0;
 }
