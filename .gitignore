@@ -1,0 +1,20 @@
+# .NET build output
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Portable distribution / local runtime
+dist/
+publish/
+engine/*.exe
+engine/*.dll
+engine/*.pdb
+models/*.gguf
+
+# Temporary / output files
+*.wav
+*.srt
+*.tmp
+transcripts/
