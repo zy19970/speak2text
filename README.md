@@ -34,7 +34,7 @@ models/
   MOSS-Transcribe-Diarize-Q8_0.gguf
 ```
 
-源码仓库中不提交 `ffmpeg.exe`、`transcribe-cli.exe` 和约 987 MB 的 GGUF 模型；请在本机准备好以后放到上述目录。
+源码仓库中不直接提交二进制运行时和约 987 MB 的 GGUF 模型。GitHub Actions 会自动构建 `transcribe-cli.exe`（CPU + Vulkan）并下载便携版 `ffmpeg.exe`，打包进 `Speak2Text-win-x64.zip`；你实际使用时只需另外补充 MOSS Q8_0 模型。
 
 ## MOSS 模型
 
@@ -65,7 +65,7 @@ MOSS Q8_0 模型下载地址可从 transcribe.cpp 官方 MOSS 文档进入：
 
 ## FFmpeg
 
-下载 Windows 便携版 FFmpeg，将 `ffmpeg.exe` 放到 `engine/`。
+GitHub Actions 会自动从 BtbN/FFmpeg-Builds 下载 Windows x64 静态 FFmpeg，并把 `ffmpeg.exe` 放入便携包的 `engine/`。如果是本地手工构建，也可以自行准备 `ffmpeg.exe` 放到该目录。
 
 转换参数：
 
@@ -75,9 +75,9 @@ ffmpeg -i input.m4a -vn -ac 1 -ar 16000 -c:a pcm_s16le output.wav
 
 ## transcribe.cpp
 
-Windows 下编译 transcribe.cpp 后，把 `transcribe-cli.exe` 以及该构建所需要的 DLL 一起复制到 `engine/`。
+GitHub Actions 固定从 `transcribe.cpp v0.2.3` 源码构建 Windows x64 `transcribe-cli.exe`，同时启用 CPU 与 Vulkan backend，并把生成的 CLI 放入便携包的 `engine/`。
 
-CPU 版本可以直接使用；如果构建了 Vulkan backend，可在程序里选择 Vulkan，用 Intel Iris Xe 等支持 Vulkan 的显卡尝试加速。
+程序里可以选择 `auto / CPU / Vulkan`。在支持 Vulkan 的 Intel Iris Xe 等显卡上，可以直接尝试 Vulkan；不兼容时切回 CPU。
 
 项目地址：
 
@@ -101,7 +101,19 @@ src/Speak2Text/Speak2Text.csproj
 dotnet build src/Speak2Text/Speak2Text.csproj -c Release
 ```
 
-## 生成绿色便携版
+## GitHub Actions 便携包
+
+推送到 `main` 后，GitHub Actions 会自动完成：安装 Vulkan SDK、构建 transcribe.cpp CPU+Vulkan CLI、下载 FFmpeg、编译 .NET 10 WinForms、生成 self-contained 绿色版 ZIP。
+
+Actions 产物名为：
+
+```text
+Speak2Text-win-x64
+```
+
+解压后已经包含 `Speak2Text.exe`、`engine/ffmpeg.exe`、`engine/transcribe-cli.exe`。**模型仍需单独放入 `models/`。**
+
+## 本地生成绿色便携版
 
 前端本身采用 self-contained 单文件发布，所以目标机器不需要安装 .NET Runtime。
 
