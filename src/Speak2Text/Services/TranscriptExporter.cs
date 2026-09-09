@@ -14,7 +14,8 @@ public sealed class TranscriptExporter
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(options.OutputDirectory);
-        var baseName = SanitizeFileName(Path.GetFileNameWithoutExtension(options.AudioPath));
+        var requestedBaseName = SanitizeFileName(Path.GetFileNameWithoutExtension(options.AudioPath));
+        var baseName = GetAvailableBaseName(options.OutputDirectory, requestedBaseName, options);
         var exported = new List<string>();
 
         if (options.ExportMarkdown)
@@ -70,6 +71,47 @@ public sealed class TranscriptExporter
         }
 
         return exported;
+    }
+
+    private static string GetAvailableBaseName(
+        string outputDirectory,
+        string requestedBaseName,
+        TranscriptionOptions options)
+    {
+        var candidate = requestedBaseName;
+        var suffix = 2;
+
+        while (WouldCollide(outputDirectory, candidate, options))
+        {
+            candidate = $"{requestedBaseName}_{suffix}";
+            suffix++;
+        }
+
+        return candidate;
+    }
+
+    private static bool WouldCollide(
+        string outputDirectory,
+        string baseName,
+        TranscriptionOptions options)
+    {
+        if (options.ExportMarkdown &&
+            File.Exists(Path.Combine(outputDirectory, $"{baseName}_逐字稿.md")))
+            return true;
+
+        if (options.ExportText &&
+            File.Exists(Path.Combine(outputDirectory, $"{baseName}_逐字稿.txt")))
+            return true;
+
+        if (options.ExportSrt &&
+            File.Exists(Path.Combine(outputDirectory, $"{baseName}.srt")))
+            return true;
+
+        if (options.ExportJson &&
+            File.Exists(Path.Combine(outputDirectory, $"{baseName}.json")))
+            return true;
+
+        return false;
     }
 
     private static string BuildMarkdown(TranscriptionResult result)
