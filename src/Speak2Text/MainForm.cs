@@ -842,6 +842,7 @@ public sealed class MainForm : Form
         {
             "FFMPEG" => "音频转换",
             "MOSS_LOAD" => "MOSS 模型加载",
+            "MOSS_LONG" => "MOSS 长录音分段转写",
             "MOSS_START" => "MOSS 初始化",
             "MOSS_ENCODE" => "MOSS 音频编码",
             "MOSS_ADAPTOR" => "MOSS 特征适配",
