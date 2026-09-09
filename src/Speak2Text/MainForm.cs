@@ -12,10 +12,26 @@ public sealed class MainForm : Form
     private readonly TextBox _outputPath = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _backend = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
     private readonly ComboBox _language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
+
     private readonly CheckBox _markdown = new() { Text = "Markdown", Checked = true, AutoSize = true };
     private readonly CheckBox _text = new() { Text = "TXT", Checked = true, AutoSize = true };
     private readonly CheckBox _srt = new() { Text = "SRT", Checked = true, AutoSize = true };
     private readonly CheckBox _json = new() { Text = "JSON", Checked = true, AutoSize = true };
+
+    private readonly Label _phaseLabel = new() { Text = "阶段：等待开始", AutoSize = true };
+    private readonly Label _progressPercentLabel = new() { Text = "--", AutoSize = true, TextAlign = ContentAlignment.MiddleRight };
+    private readonly Label _mediaPositionLabel = new() { Text = "处理位置：--", AutoSize = true, ForeColor = SystemColors.GrayText };
+    private readonly Label _elapsedLabel = new() { Text = "已耗时：00:00", AutoSize = true };
+    private readonly Label _remainingLabel = new() { Text = "预计剩余：--", AutoSize = true };
+    private readonly ProgressBar _progress = new()
+    {
+        Dock = DockStyle.Fill,
+        Minimum = 0,
+        Maximum = 1000,
+        Value = 0,
+        Height = 20,
+        Style = ProgressBarStyle.Blocks
+    };
 
     private readonly Label _cpuUsageLabel = new() { Text = "CPU 0%", AutoSize = true };
     private readonly Label _gpuUsageLabel = new() { Text = "GPU --", AutoSize = true };
@@ -54,7 +70,6 @@ public sealed class MainForm : Form
     private readonly Button _startButton = new() { Text = "开始转写", AutoSize = true, Height = 36 };
     private readonly Button _cancelButton = new() { Text = "取消", AutoSize = true, Height = 36, Enabled = false };
     private readonly Button _openOutputButton = new() { Text = "打开输出目录", AutoSize = true, Height = 36, Enabled = false };
-    private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Style = ProgressBarStyle.Blocks, Height = 18 };
     private readonly Label _status = new() { Text = "就绪", AutoSize = true };
 
     private readonly Panel _dropPanel = new()
@@ -62,7 +77,7 @@ public sealed class MainForm : Form
         Dock = DockStyle.Fill,
         BorderStyle = BorderStyle.FixedSingle,
         AllowDrop = true,
-        MinimumSize = new Size(0, 90)
+        MinimumSize = new Size(0, 88)
     };
     private readonly Label _dropLabel = new()
     {
@@ -78,15 +93,21 @@ public sealed class MainForm : Form
     private readonly SystemResourceMonitor _resourceMonitor = new();
     private readonly System.Windows.Forms.Timer _usageTimer = new() { Interval = 1000 };
 
+    private readonly Stopwatch _taskStopwatch = new();
+    private readonly Stopwatch _phaseStopwatch = new();
+
     private CancellationTokenSource? _cancellation;
     private IReadOnlyList<string> _lastExportedFiles = [];
+    private string _currentPhaseKey = string.Empty;
+    private double? _currentPhasePercent;
+    private bool _currentPhaseEstimate;
 
     public MainForm()
     {
         Text = "Speak2Text - 离线录音转文字";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(860, 540);
-        Size = new Size(960, 610);
+        MinimumSize = new Size(900, 700);
+        Size = new Size(1020, 780);
         Font = new Font("Microsoft YaHei UI", 9F);
         AutoScaleMode = AutoScaleMode.Dpi;
         AllowDrop = true;
@@ -103,7 +124,6 @@ public sealed class MainForm : Form
         WireEvents();
         UpdateCpuLimitHint();
         UpdateRuntimeStatus();
-
         _usageTimer.Start();
     }
 
@@ -114,16 +134,12 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(14),
             ColumnCount = 1,
-            RowCount = 8
+            RowCount = 9,
+            AutoScroll = true
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 105));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        for (var i = 0; i < 9; i++)
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var title = new Label
         {
@@ -141,8 +157,9 @@ public sealed class MainForm : Form
         root.Controls.Add(BuildPathRow("模型文件", _modelPath, "选择…", BrowseModel), 0, 3);
         root.Controls.Add(BuildPathRow("输出目录", _outputPath, "选择…", BrowseOutputDirectory), 0, 4);
         root.Controls.Add(BuildOptionsRow(), 0, 5);
-        root.Controls.Add(BuildResourceGroup(), 0, 6);
-        root.Controls.Add(BuildActionRow(), 0, 7);
+        root.Controls.Add(BuildProgressGroup(), 0, 6);
+        root.Controls.Add(BuildResourceGroup(), 0, 7);
+        root.Controls.Add(BuildActionRow(), 0, 8);
 
         Controls.Add(root);
     }
@@ -191,6 +208,55 @@ public sealed class MainForm : Form
         return panel;
     }
 
+    private Control BuildProgressGroup()
+    {
+        var group = new GroupBox
+        {
+            Text = "处理进度",
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            Padding = new Padding(10),
+            Margin = new Padding(0, 14, 0, 0)
+        };
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 4
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        _progressPercentLabel.Font = new Font(Font.FontFamily, 10F, FontStyle.Bold);
+        _progressPercentLabel.Margin = new Padding(10, 0, 0, 0);
+
+        layout.Controls.Add(_phaseLabel, 0, 0);
+        layout.Controls.Add(_progressPercentLabel, 1, 0);
+        layout.Controls.Add(_progress, 0, 1);
+        layout.SetColumnSpan(_progress, 2);
+
+        layout.Controls.Add(_mediaPositionLabel, 0, 2);
+        layout.SetColumnSpan(_mediaPositionLabel, 2);
+
+        var times = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        _elapsedLabel.Margin = new Padding(0, 0, 24, 0);
+        times.Controls.Add(_elapsedLabel);
+        times.Controls.Add(_remainingLabel);
+        layout.Controls.Add(times, 0, 3);
+        layout.SetColumnSpan(times, 2);
+
+        group.Controls.Add(layout);
+        return group;
+    }
+
     private Control BuildResourceGroup()
     {
         var group = new GroupBox
@@ -219,7 +285,7 @@ public sealed class MainForm : Form
 
         var note = new Label
         {
-            Text = "CPU 上限通过减少 transcribe.cpp/FFmpeg 线程数实现；GPU 上限采用进程占空比节流，属于近似控制。",
+            Text = "CPU 上限通过线程数和低优先级控制；GPU 上限采用进程占空比节流，属于近似控制。",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             Margin = new Padding(3, 8, 3, 0)
@@ -268,25 +334,20 @@ public sealed class MainForm : Form
 
     private Control BuildActionRow()
     {
-        var wrapper = new TableLayoutPanel
+        var panel = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            ColumnCount = 1,
+            WrapContents = false,
             Margin = new Padding(0, 14, 0, 10)
         };
 
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
-        actions.Controls.Add(_startButton);
-        actions.Controls.Add(_cancelButton);
-        actions.Controls.Add(_openOutputButton);
-        actions.Controls.Add(_status);
+        panel.Controls.Add(_startButton);
+        panel.Controls.Add(_cancelButton);
+        panel.Controls.Add(_openOutputButton);
         _status.Margin = new Padding(16, 10, 0, 0);
-
-        wrapper.Controls.Add(actions, 0, 0);
-        wrapper.Controls.Add(_progress, 0, 1);
-        _progress.Margin = new Padding(0, 8, 0, 0);
-        return wrapper;
+        panel.Controls.Add(_status);
+        return panel;
     }
 
     private void WireEvents()
@@ -294,10 +355,17 @@ public sealed class MainForm : Form
         _startButton.Click += StartTranscriptionAsync;
         _cancelButton.Click += (_, _) => _cancellation?.Cancel();
         _openOutputButton.Click += (_, _) => OpenOutputDirectory();
-        _usageTimer.Tick += (_, _) => UpdateResourceUsage();
+
+        _usageTimer.Tick += (_, _) =>
+        {
+            UpdateResourceUsage();
+            UpdateElapsedAndRemaining();
+        };
+
         _cpuLimit.ValueChanged += (_, _) => UpdateCpuLimitHint();
         _limitCpu.CheckedChanged += (_, _) => _cpuLimit.Enabled = _limitCpu.Checked;
         _limitGpu.CheckedChanged += (_, _) => _gpuLimit.Enabled = _limitGpu.Checked;
+
         FormClosed += (_, _) =>
         {
             _usageTimer.Stop();
@@ -311,6 +379,110 @@ public sealed class MainForm : Form
         _dropPanel.DragDrop += HandleDragDrop;
         _dropLabel.DragEnter += HandleDragEnter;
         _dropLabel.DragDrop += HandleDragDrop;
+    }
+
+    private void HandlePipelineProgress(PipelineMessage message)
+    {
+        var phaseKey = $"{message.Stage}:{message.Phase}";
+        if (!string.Equals(phaseKey, _currentPhaseKey, StringComparison.Ordinal))
+        {
+            _currentPhaseKey = phaseKey;
+            _phaseStopwatch.Restart();
+        }
+
+        _status.Text = message.Message;
+        _phaseLabel.Text = $"阶段：{GetPhaseDisplayName(message.Phase)}";
+        _currentPhasePercent = message.Percent;
+        _currentPhaseEstimate = message.IsEstimate;
+
+        if (message.Percent is double percent)
+        {
+            _progress.Style = ProgressBarStyle.Blocks;
+            _progress.Value = Math.Clamp((int)Math.Round(percent * 10d), 0, 1000);
+            _progressPercentLabel.Text = $"{(message.IsEstimate ? "约 " : string.Empty)}{percent:0.0}%";
+        }
+        else
+        {
+            _progress.Style = ProgressBarStyle.Marquee;
+            _progressPercentLabel.Text = "--";
+        }
+
+        if (message.PositionMilliseconds is long position &&
+            message.DurationMilliseconds is long duration &&
+            duration > 0)
+        {
+            _mediaPositionLabel.Text =
+                $"处理位置：{FormatDuration(TimeSpan.FromMilliseconds(position))} / {FormatDuration(TimeSpan.FromMilliseconds(duration))}";
+        }
+        else
+        {
+            _mediaPositionLabel.Text = message.Phase == "MOSS_LOAD"
+                ? "处理位置：正在加载模型，首次进度事件将在编码开始后出现"
+                : "处理位置：--";
+        }
+
+        if (message.Stage == PipelineStage.Completed)
+        {
+            _taskStopwatch.Stop();
+            _phaseStopwatch.Stop();
+            _remainingLabel.Text = "预计剩余：00:00";
+        }
+
+        UpdateElapsedAndRemaining();
+    }
+
+    private static string GetPhaseDisplayName(string phase)
+        => phase switch
+        {
+            "FFMPEG" => "音频转换",
+            "MOSS_LOAD" => "MOSS 模型加载",
+            "MOSS_START" => "MOSS 初始化",
+            "MOSS_ENCODE" => "MOSS 音频编码",
+            "MOSS_ADAPTOR" => "MOSS 特征适配",
+            "MOSS_PREFILL" => "MOSS 解码预填充",
+            "MOSS_DECODE" => "MOSS 转写生成",
+            "MOSS_DONE" => "MOSS 识别完成",
+            "EXPORT" => "结果文件生成",
+            "DONE" => "全部完成",
+            _ => phase
+        };
+
+    private void UpdateElapsedAndRemaining()
+    {
+        if (_taskStopwatch.IsRunning || _taskStopwatch.Elapsed > TimeSpan.Zero)
+            _elapsedLabel.Text = $"已耗时：{FormatDuration(_taskStopwatch.Elapsed)}";
+
+        if (!_phaseStopwatch.IsRunning ||
+            _currentPhasePercent is not double percent ||
+            percent <= 0.5 ||
+            percent >= 99.9 ||
+            _phaseStopwatch.Elapsed.TotalSeconds < 2)
+        {
+            if (_currentPhasePercent is not >= 99.9)
+                _remainingLabel.Text = "预计剩余：--";
+            return;
+        }
+
+        var remainingSeconds =
+            _phaseStopwatch.Elapsed.TotalSeconds * (100d - percent) / percent;
+
+        if (!double.IsFinite(remainingSeconds) || remainingSeconds < 0)
+        {
+            _remainingLabel.Text = "预计剩余：--";
+            return;
+        }
+
+        var remaining = TimeSpan.FromSeconds(Math.Min(remainingSeconds, TimeSpan.FromDays(7).TotalSeconds));
+        _remainingLabel.Text =
+            $"预计剩余（当前阶段）：{(_currentPhaseEstimate ? "约 " : string.Empty)}{FormatDuration(remaining)}";
+    }
+
+    private static string FormatDuration(TimeSpan value)
+    {
+        value = value < TimeSpan.Zero ? TimeSpan.Zero : value;
+        return value.TotalHours >= 1
+            ? $"{(int)value.TotalHours:00}:{value.Minutes:00}:{value.Seconds:00}"
+            : $"{value.Minutes:00}:{value.Seconds:00}";
     }
 
     private void UpdateResourceUsage()
@@ -424,34 +596,40 @@ public sealed class MainForm : Form
             ValidateRuntimeFiles(options);
 
             SetBusy(true);
+            ResetProgressUi();
+
             _lastExportedFiles = [];
             _cancellation = new CancellationTokenSource();
+            _taskStopwatch.Restart();
 
-            var progress = new Progress<PipelineMessage>(message =>
-            {
-                _status.Text = message.Message;
-                if (message.Stage == PipelineStage.Transcribing)
-                    _progress.Style = ProgressBarStyle.Marquee;
-            });
-
+            var progress = new Progress<PipelineMessage>(HandlePipelineProgress);
             var result = await _pipeline.RunAsync(options, progress, _cancellation.Token);
+
             _lastExportedFiles = result.ExportedFiles;
             _status.Text = $"完成：{result.Transcript.Segments.Count} 个片段，{result.Transcript.SpeakerIds.Count()} 位说话人";
-            _progress.Style = ProgressBarStyle.Blocks;
-            _progress.Value = 100;
             _openOutputButton.Enabled = true;
         }
         catch (OperationCanceledException)
         {
+            _taskStopwatch.Stop();
+            _phaseStopwatch.Stop();
             _status.Text = "已取消";
+            _phaseLabel.Text = "阶段：已取消";
             _progress.Style = ProgressBarStyle.Blocks;
             _progress.Value = 0;
+            _progressPercentLabel.Text = "--";
+            _remainingLabel.Text = "预计剩余：--";
         }
         catch (Exception ex)
         {
+            _taskStopwatch.Stop();
+            _phaseStopwatch.Stop();
             _status.Text = "处理失败";
+            _phaseLabel.Text = "阶段：处理失败";
             _progress.Style = ProgressBarStyle.Blocks;
             _progress.Value = 0;
+            _progressPercentLabel.Text = "--";
+            _remainingLabel.Text = "预计剩余：--";
             MessageBox.Show(this, ex.Message, "Speak2Text", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -459,7 +637,25 @@ public sealed class MainForm : Form
             _cancellation?.Dispose();
             _cancellation = null;
             SetBusy(false);
+            UpdateElapsedAndRemaining();
         }
+    }
+
+    private void ResetProgressUi()
+    {
+        _currentPhaseKey = string.Empty;
+        _currentPhasePercent = null;
+        _currentPhaseEstimate = false;
+        _taskStopwatch.Reset();
+        _phaseStopwatch.Reset();
+
+        _phaseLabel.Text = "阶段：准备开始";
+        _progress.Style = ProgressBarStyle.Blocks;
+        _progress.Value = 0;
+        _progressPercentLabel.Text = "0.0%";
+        _mediaPositionLabel.Text = "处理位置：--";
+        _elapsedLabel.Text = "已耗时：00:00";
+        _remainingLabel.Text = "预计剩余：--";
     }
 
     private TranscriptionOptions BuildOptions()
@@ -470,6 +666,7 @@ public sealed class MainForm : Form
             2 => "vulkan",
             _ => "auto"
         };
+
         var language = _language.SelectedIndex switch
         {
             1 => "zh",
@@ -501,6 +698,8 @@ public sealed class MainForm : Form
             throw new InvalidOperationException("请先选择一个录音文件。");
         if (!File.Exists(AppPaths.FfmpegPath))
             throw new FileNotFoundException("缺少 engine\\ffmpeg.exe。", AppPaths.FfmpegPath);
+        if (!File.Exists(AppPaths.FfprobePath))
+            throw new FileNotFoundException("缺少 engine\\ffprobe.exe。请重新下载最新 Action 便携包。", AppPaths.FfprobePath);
         if (!File.Exists(AppPaths.TranscribeCliPath))
             throw new FileNotFoundException("缺少 engine\\transcribe-cli.exe。", AppPaths.TranscribeCliPath);
         if (!File.Exists(options.ModelPath))
@@ -531,11 +730,7 @@ public sealed class MainForm : Form
         AllowDrop = !busy;
 
         if (busy)
-        {
-            _progress.Value = 0;
-            _progress.Style = ProgressBarStyle.Marquee;
             _openOutputButton.Enabled = false;
-        }
     }
 
     private void OpenOutputDirectory()
@@ -559,6 +754,7 @@ public sealed class MainForm : Form
     {
         var missing = new List<string>();
         if (!File.Exists(AppPaths.FfmpegPath)) missing.Add("ffmpeg.exe");
+        if (!File.Exists(AppPaths.FfprobePath)) missing.Add("ffprobe.exe");
         if (!File.Exists(AppPaths.TranscribeCliPath)) missing.Add("transcribe-cli.exe");
         if (!File.Exists(AppPaths.DefaultModelPath)) missing.Add("MOSS Q8 模型");
 
