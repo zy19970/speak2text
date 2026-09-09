@@ -19,6 +19,7 @@
 - 语言可选自动、中文、英文
 - 输出 Markdown、TXT、SRT、JSON
 - 队列支持删除、清空、上移、下移；后台串行执行，界面不阻塞
+- 队列表格显示录音时长、实际后端和“说明 / 错误原因”，Vulkan 回退原因无需再从控制台日志里查
 - 不在界面显示识别结果预览，完成后直接打开输出目录查看文件
 - 精确显示 FFmpeg 转换百分比、已处理媒体时间、已耗时和预计剩余时间
 - 使用 Speak2Text 专用 transcribe.cpp 构建，在 MOSS 内部编码、prefill 和逐 token 解码阶段输出源码级实时进度
@@ -262,13 +263,16 @@ MOSS-Transcribe-Diarize 会把整段录音保存在内存中，内存占用会�
 Speak2Text 对非 CPU 后端做两层保护：
 
 1. Vulkan / Auto 运行 MOSS 时显式使用 `--kv-type f16`，降低解码 KV cache 的设备内存压力。
-2. 如果 Vulkan / Auto 进程仍以非零退出码失败，程序不会重新做 FFmpeg 转换，而是保留当前 `temp/<任务>/audio-16k-mono.wav`，直接对同一个 WAV 自动切换到 CPU 重试。
+2. 如果 Vulkan / Auto 进程失败，程序先识别错误文本。只有检测到 `ggml_vulkan`、`ErrorOutOfDeviceMemory`、Vulkan buffer allocation、device lost 等明确的 Vulkan/设备内存故障时，才对同一个临时 WAV 自动切换到 CPU 重试；模型格式、参数、输入等非 Vulkan 错误不会被盲目回退掩盖。
 
-回退过程中界面会显示：
+回退过程中界面会显示具体原因，例如：
 
 ```text
-GPU失败，切换CPU
+Vulkan 失败：Vulkan 显存/设备内存不足或 KV cache 分配失败，单次申请约 7.0 GiB
+正在自动切换 CPU…
 ```
+
+该原因同时写入队列表格的“说明 / 错误原因”列；完整原始错误保留在该单元格的悬停提示中。
 
 如果 CPU 重试成功，该文件正常导出并继续队列中的下一个文件；导出 JSON / Markdown 中记录的 backend 会写成实际使用的 `cpu`。只有 GPU 和 CPU 都失败时，该队列项才最终标记为失败。
 
@@ -290,3 +294,28 @@ Speak2Text 现在会在进入 MOSS 前自动检查已经转换好的 WAV 时长�
 说话人处理采用重叠区自动重映射：程序比较相邻分段重叠 60 秒内各 Speaker 的时间重合关系，把新分段的匿名 Speaker ID 尽量映射回已有全局 Speaker ID。最终合并时以重叠区中点作为交接位置，避免同一段话重复输出。
 
 这是基于时间重叠的自动匹配，通常适合培训、会议这类连续录音，但不能把它当作声纹身份认证。如果边界附近同时多人抢话、长时间静音或说话人恰好在分段处完全更换，仍可能出现 Speaker 编号映射不准的情况。
+
+
+## 长录音预警
+
+当队列准备处理 **45 分钟及以上**的录音，并且全局后端为 `Auto` 或 `Vulkan` 时，会在真正启动 MOSS 前读取媒体时长并弹出预警。
+
+预警提供三个选择：
+
+- **是**：仅当前文件改用 CPU，不修改队列中其他文件的全局后端设置；
+- **否**：继续 Auto / Vulkan。GPU 长录音仍按现有策略分段处理；若某个分段出现明确 Vulkan 显存/设备内存错误，会自动回退 CPU；
+- **取消**：停止整个队列，当前文件保持“等待中”，以后可继续。
+
+选择结果会写入队列“说明 / 错误原因”列。队列中还会显示录音总时长以及最终实际使用的后端；如果部分分段使用 Vulkan、部分分段自动回退 CPU，后端显示为“混合”。
+
+针对已经出现过的典型错误：
+
+```text
+ggml_vulkan: Device memory allocation ... failed
+Requested buffer size exceeds device buffer size limit: ErrorOutOfDeviceMemory
+alloc_tensor_range: failed to allocate Vulkan0 buffer
+causal_lm kv_init: buffer alloc failed
+moss run: KV cache allocation failed
+```
+
+程序会归类为 Vulkan 设备内存 / KV cache 分配失败，并自动进入 CPU 回退逻辑。
