@@ -18,6 +18,11 @@ public sealed class TranscriptionPipeline
         _exporter = new TranscriptExporter();
     }
 
+    public Task<long> ProbeDurationMillisecondsAsync(
+        string inputPath,
+        CancellationToken cancellationToken)
+        => _ffmpeg.ProbeDurationMillisecondsAsync(inputPath, cancellationToken);
+
     public async Task<PipelineResult> RunAsync(
         TranscriptionOptions options,
         IProgress<PipelineMessage>? progress,
