@@ -22,7 +22,9 @@ env:
 
 jobs:
   windows-build:
-    runs-on: windows-latest
+    # CUDA 12.9 officially supports the VS2022 host compiler. windows-latest
+    # currently resolves to VS2026, which NVCC rejects during compiler-id checks.
+    runs-on: windows-2022
     timeout-minutes: 120
 
     steps:
@@ -40,7 +42,7 @@ jobs:
       - name: Build Speak2Text
         run: dotnet build src/Speak2Text/Speak2Text.csproj -c Release --no-restore
 
-      - name: Setup MSVC
+      - name: Setup MSVC 2022
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
