@@ -1,9 +1,15 @@
 # engine
 
-便携运行时目录。发布后请把以下文件放在 `Speak2Text.exe` 同级的 `engine` 文件夹：
+便携运行时目录。GitHub Actions 生成的完整绿色包会自动包含：
 
 - `ffmpeg.exe`
-- `transcribe-cli.exe`
-- transcribe.cpp Windows 构建所需的同目录 DLL（若使用动态 backend / Vulkan 构建）
+- `ffprobe.exe`
+- `transcribe-cli.exe`：Speak2Text 的小型调度器
+- `transcribe-native.exe`：带 CPU + Vulkan + CUDA 的 patched transcribe.cpp 引擎
+- `cudart64_12.dll`
+- `cublas64_12.dll`
+- `cublasLt64_12.dll`
 
-程序不会自动安装任何系统组件。
+CUDA 运行时 DLL 会跟随绿色包，因此目标电脑不需要单独安装 CUDA Toolkit。要使用 `CUDA（NVIDIA）` 后端，目标电脑仍需安装可用的 NVIDIA 显卡驱动；`nvcuda.dll` 由 NVIDIA 驱动提供，不随本项目分发。
+
+没有 NVIDIA 显卡时仍可使用 CPU 或 Vulkan。程序不会自动安装任何系统组件。
