@@ -23,7 +23,7 @@ env:
 jobs:
   windows-build:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
 
     steps:
       - name: Checkout Speak2Text
@@ -58,12 +58,21 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$env:VULKAN_VERSION\bin"
 
-      - name: Build transcribe.cpp CLI (CPU + Vulkan)
+      - name: Install CUDA Toolkit 12.9
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: "12.9.0"
+          method: network
+          use-github-cache: false
+          use-local-cache: false
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: Build transcribe.cpp CLI (CPU + Vulkan + CUDA)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Keep these paths short: ggml-vulkan has deeply nested generated paths on Windows.
+          # Keep these paths short: ggml-vulkan / ggml-cuda generate deep paths on Windows.
           $src = "C:\tc"
           $build = "C:\tb"
 
@@ -84,6 +93,8 @@ jobs:
           cmake -S $src -B $build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DTRANSCRIBE_VULKAN=ON `
+            -DTRANSCRIBE_CUDA=ON `
+            "-DCMAKE_CUDA_ARCHITECTURES=75-real;86-real;86-virtual" `
             -DTRANSCRIBE_BUILD_TESTS=OFF `
             -DTRANSCRIBE_BUILD_EXAMPLES=ON `
             -DTRANSCRIBE_BUILD_TOOLS=OFF `
@@ -104,7 +115,25 @@ jobs:
           New-Item -ItemType Directory -Force -Path "engine" | Out-Null
           Copy-Item $cli.FullName "engine\transcribe-cli.exe" -Force
 
-          & "engine\transcribe-cli.exe" --help | Select-Object -First 20
+          # Keep the package portable: CUDA Toolkit is not required on the target PC.
+          # The NVIDIA display driver still supplies nvcuda.dll.
+          $cudaBin = Join-Path $env:CUDA_PATH "bin"
+          $cudaRuntimePatterns = @(
+            "cudart64_12.dll",
+            "cublas64_12.dll",
+            "cublasLt64_12.dll"
+          )
+
+          foreach ($pattern in $cudaRuntimePatterns) {
+            $dll = Get-ChildItem $cudaBin -File -Filter $pattern | Select-Object -First 1
+            if (-not $dll) {
+              throw "Required CUDA runtime DLL not found: $pattern under $cudaBin"
+            }
+            Copy-Item $dll.FullName "engine\$($dll.Name)" -Force
+          }
+
+          & "engine\transcribe-cli.exe" --help | Select-String -Pattern "backend" -Context 0,1
+          & "engine\transcribe-cli.exe" --list-devices
 
       - name: Download portable FFmpeg
         shell: pwsh
@@ -147,7 +176,10 @@ jobs:
             "$root\Speak2Text.exe",
             "$root\engine\ffmpeg.exe",
             "$root\engine\ffprobe.exe",
-            "$root\engine\transcribe-cli.exe"
+            "$root\engine\transcribe-cli.exe",
+            "$root\engine\cudart64_12.dll",
+            "$root\engine\cublas64_12.dll",
+            "$root\engine\cublasLt64_12.dll"
           )
 
           foreach ($file in $required) {
