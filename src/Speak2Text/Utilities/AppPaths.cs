@@ -14,12 +14,14 @@ public static class AppPaths
     }
 
     public static string EngineDirectory => Path.Combine(RuntimeRoot, "engine");
+    public static string CudaRuntimeDirectory => Path.Combine(EngineDirectory, "cuda");
     public static string ModelsDirectory => Path.Combine(RuntimeRoot, "models");
     public static string TemporaryDirectory => Path.Combine(RuntimeRoot, "temp");
 
     public static string FfmpegPath => Path.Combine(EngineDirectory, "ffmpeg.exe");
     public static string FfprobePath => Path.Combine(EngineDirectory, "ffprobe.exe");
     public static string TranscribeCliPath => Path.Combine(EngineDirectory, "transcribe-cli.exe");
+    public static string CudaTranscribeCliPath => Path.Combine(EngineDirectory, "transcribe-cli-cuda.exe");
     public static string DefaultModelPath => Path.Combine(ModelsDirectory, "MOSS-Transcribe-Diarize-Q8_0.gguf");
 
     public static void PrepareTemporaryDirectory()
