@@ -113,7 +113,16 @@ jobs:
           }
 
           New-Item -ItemType Directory -Force -Path "engine" | Out-Null
-          Copy-Item $cli.FullName "engine\transcribe-cli.exe" -Force
+
+          # The real engine carries all compute backends. A tiny dispatcher keeps
+          # MainForm's existing auto/cpu/vulkan contract and can turn only the
+          # explicit NVIDIA option into --backend cuda.
+          Copy-Item $cli.FullName "engine\transcribe-native.exe" -Force
+
+          cl.exe /nologo /O2 /EHsc /std:c++17 `
+            /Fe:"engine\transcribe-cli.exe" `
+            "native\transcribe-dispatcher.cpp"
+          if ($LASTEXITCODE -ne 0) { throw "dispatcher build failed" }
 
           # Keep the package portable: CUDA Toolkit is not required on the target PC.
           # The NVIDIA display driver still supplies nvcuda.dll.
@@ -177,6 +186,7 @@ jobs:
             "$root\engine\ffmpeg.exe",
             "$root\engine\ffprobe.exe",
             "$root\engine\transcribe-cli.exe",
+            "$root\engine\transcribe-native.exe",
             "$root\engine\cudart64_12.dll",
             "$root\engine\cublas64_12.dll",
             "$root\engine\cublasLt64_12.dll"
