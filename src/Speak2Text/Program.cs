@@ -13,6 +13,8 @@ internal static class Program
         // task directories left by crashes or forced shutdowns.
         AppPaths.PrepareTemporaryDirectory();
 
-        Application.Run(new MainForm());
+        var form = new MainForm();
+        CudaBackendUi.Attach(form);
+        Application.Run(form);
     }
 }
