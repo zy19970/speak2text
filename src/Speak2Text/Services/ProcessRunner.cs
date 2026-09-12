@@ -28,6 +28,14 @@ public sealed class ProcessRunner
             StandardErrorEncoding = Encoding.UTF8
         };
 
+        if (!string.IsNullOrWhiteSpace(options?.PathPrepend))
+        {
+            startInfo.Environment.TryGetValue("PATH", out var currentPath);
+            startInfo.Environment["PATH"] = string.IsNullOrWhiteSpace(currentPath)
+                ? options.PathPrepend
+                : options.PathPrepend + Path.PathSeparator + currentPath;
+        }
+
         foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
 
@@ -256,5 +264,8 @@ public sealed class ProcessRunner
     }
 }
 
-public sealed record ProcessRunOptions(bool LowPriority = false, int? DutyCyclePercent = null);
+public sealed record ProcessRunOptions(
+    bool LowPriority = false,
+    int? DutyCyclePercent = null,
+    string? PathPrepend = null);
 public sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
