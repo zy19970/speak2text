@@ -54,6 +54,12 @@ public sealed class LongAudioWarningDialog : Form
         Font = new Font("Microsoft YaHei UI", 9F);
         AutoScaleMode = AutoScaleMode.Dpi;
 
+        if (CudaBackendUi.IsCudaSelected &&
+            string.Equals(backendText, "Auto", StringComparison.OrdinalIgnoreCase))
+        {
+            backendText = "CUDA（NVIDIA）";
+        }
+
         var title = new Label
         {
             Text = "检测到长录音",
@@ -70,8 +76,8 @@ public sealed class LongAudioWarningDialog : Form
                 $"文件：{fileName}\r\n" +
                 $"时长：{durationText}\r\n" +
                 $"当前后端：{backendText}\r\n\r\n" +
-                "长录音在 Vulkan 上可能因为 KV cache 或大缓冲区分配导致显存/设备内存不足。\r\n" +
-                "程序会对 GPU 长录音自动分段；如果分段内仍发生明确的 Vulkan 显存错误，也会自动回退 CPU。"
+                "长录音在 CUDA / Vulkan 上都可能因为 KV cache 或大缓冲区分配导致 GPU 显存/设备内存不足。\r\n" +
+                "程序会对 GPU 长录音自动分段；如果仍发生明确的 CUDA / Vulkan 显存错误，也会自动回退 CPU。"
         };
 
         _countdownLabel.Margin = new Padding(0, 14, 0, 4);
